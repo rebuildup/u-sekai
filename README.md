@@ -49,6 +49,12 @@ This repository is in **research / design phase**.
 - Undecided items are not described as "adopted" or "planned specification".
 - Draft research questions live in [`docs/research-issues/`](./docs/research-issues/). They will be opened as GitHub Issues over time.
 
+## Detailed vision
+
+The current conceptual thesis is documented in [`docs/vision.md`](./docs/vision.md).
+
+It records the direction around capability-constrained Synthetic Users, open-ended exploration, subjective participant feedback, and generative benchmarking while deliberately leaving implementation architecture and technology choices unresolved.
+
 ## Repository layout (current)
 
 ```text
