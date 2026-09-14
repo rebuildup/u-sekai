@@ -1,0 +1,41 @@
+name: release-source-check
+
+# This workflow enforces ADR-0003 in u-sekai: PRs targeting `main` must come
+# from a `release-<major>-<minor>-<patch>` branch. It is registered as a
+# required status check on `main` via the GitHub branch protection API,
+# because GitHub's built-in branch protection cannot constrain the PR head
+# branch pattern by itself.
+#
+# Triggers on every PR targeting `main`. Exits non-zero (failing the check)
+# when the head branch is not a `release-x-y-z` branch.
+
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, edited, synchronize, reopened]
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  release-source-check:
+    name: Validate PR source branch
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check that head branch matches release-<major>-<minor>-<patch>
+        env:
+          HEAD_REF: ${{ github.head_ref }}
+        run: |
+          if [ -z "$HEAD_REF" ]; then
+            echo "::error::HEAD_REF is empty; this workflow is only meaningful for PRs from branches."
+            exit 1
+          fi
+
+          if [[ ! "$HEAD_REF" =~ ^release-[0-9]+-[0-9]+-[0-9]+$ ]]; then
+            echo "::error::PR head branch '$HEAD_REF' is not a release-<major>-<minor>-<patch> branch."
+            echo "::error::Per u-sekai ADR-0003, only release-x-y-z -> main PRs are allowed."
+            exit 1
+          fi
+
+          echo "Head branch '$HEAD_REF' is a valid release branch."
