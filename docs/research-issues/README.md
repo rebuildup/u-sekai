@@ -43,21 +43,30 @@
   - A references / benchmark list exists in docs
   - Evaluation metrics, calibration methods, and pitfalls are summarized
 
-### R-03: How far can Synthetic User capability limits be reproduced at the runtime layer?
+### R-03: How should Synthetic User capability boundaries be enforced at runtime?
 
-- **Question**: Inventory how the dimensions of individual difference (capability, perception, operating environment, memory, preference, situation) can be modeled / reproduced at u-sekai's runtime or agent layer.
-- **Motivation**: reproducing individual difference is the core value of u-sekai. Without a clear boundary, implementation explodes.
+- **Question**: Investigate how perception, action, tool availability, and memory can be **actually constrained by the experiment runtime**, rather than simulated primarily through persona / role-play instructions.
+- **Motivation**: a capable model cannot reliably become a novice, impaired, or unfamiliar user merely because a prompt asks it to behave like one. u-sekai's core hypothesis is that unavailable capabilities should be made unavailable whenever feasible.
 - **Initial scope**:
-  - What granularity of individual difference to model (e.g. visually impaired / elderly / novice / general user)
-  - What to reproduce at runtime vs via prompt / profile alone
-- **Initial non-scope**: dependence on a specific model; locking in specific UI operations.
+  - Perception boundaries (visual transformations, information exposure, temporal access)
+  - Action boundaries (available input primitives, precision, device-specific operations)
+  - Tool topology (different users may receive different tools rather than one universal toolbox)
+  - Memory availability / retention boundaries
+  - What information privileged browser / automation APIs must withhold from participant agents
+- **Initial non-scope**:
+  - Locking in a browser driver, computer-use provider, or agent SDK
+  - Defining demographic labels as deterministic capability bundles
+  - Final implementation API
 - **Dependencies**: R-01, R-02.
 - **Suggested investigation**:
-  - Catalog how existing research / OSS reproduce individual difference
-  - Classify required information sources (accessibility profile, cognitive profile, demographic profile, preference profile)
-  - Trade off runtime reproduction cost / complexity against fidelity
+  - Compare prompt-only simulation with environment-enforced restrictions
+  - Catalog which user differences can be represented as real I/O or memory constraints
+  - Identify constraints that cannot currently be enforced without unacceptable distortion
+  - Investigate how to prevent hidden automation metadata from leaking capabilities to the participant
 - **Acceptance criteria**:
-  - The runtime-reproduce / prompt-reproduce / give-up boundaries are documented
+  - A capability taxonomy exists
+  - Runtime-enforced vs model-mediated boundaries are explicitly separated
+  - Known fidelity limitations and leakage risks are documented
 
 ### R-04: Comparison of isolated execution environments
 
@@ -77,41 +86,58 @@
   - Environment option comparison table exists in docs
   - Recommended candidate set (not yet adopted) is documented
 
-### R-05: Subjective evaluation / post-session feedback design
+### R-05: Subjective experience / post-session evaluation design
 
-- **Question**: Design how a Synthetic User **reports subjective experience** (rating, free-form reflection, behavioral log, etc.). Compare candidate approaches.
-- **Motivation**: half of u-sekai's value is making subjective UX visible. Without a workable design, u-sekai has no reason to exist.
+- **Question**: Investigate how to capture a Synthetic User's **subjective experience** after and during an episode without collapsing UX into task success or a single synthetic score.
+- **Motivation**: a participant can complete an interaction while feeling confused, uncertain, frustrated, manipulated, or unwilling to return. Conversely, failure to reach a target state does not fully describe the experience.
 - **Initial scope**:
-  - Timing of subjective evaluation (per-action / per-task / per-session / per-condition)
-  - Format (numeric rating, Likert, free-form, behavioral log, emotion tags, etc.)
-  - Balancing comparability with reproducibility
-- **Initial non-scope**: dependence on a specific LLM / model. Final UI decision.
-- **Dependencies**: R-02.
+  - Participant self-report after an episode, based on the state / memories the participant actually retained
+  - Independent observer evaluation from richer trajectory evidence
+  - Behavioral / system telemetry as a separate observation channel
+  - Structured and free-form interview approaches
+  - Disagreement between participant, observer, and telemetry
+- **Initial non-scope**:
+  - Treating self-report as ground truth
+  - A universal UX score
+  - Dependence on a specific LLM / judge model
+  - Final release-gate thresholds
+- **Dependencies**: R-02, R-11.
 - **Suggested investigation**:
-  - Survey subjective evaluation methods in UX research / HCI / user simulation
-  - Compare LLM-as-judge / structured output / free-form reflection
-  - Trade off reproducibility, comparability, and analyzability
+  - Survey post-task / post-session UX research methods and LLM-based participant interviewing
+  - Compare fixed questionnaires with episode-adaptive follow-up questions
+  - Investigate self-report bias when the participant is given full replay versus retained memory only
+  - Define evidence that should remain separate instead of normalized into one number
 - **Acceptance criteria**:
-  - A subjective evaluation option comparison table exists in docs
-  - A recommended candidate set (not yet adopted) is documented
+  - Participant / observer / telemetry channels are clearly distinguished
+  - Candidate interview approaches and their bias risks are documented
+  - The design preserves meaningful disagreement between evidence channels
 
-### R-06: User story / user population generation
+### R-06: Open-ended user state / story / population generation
 
-- **Question**: Investigate how to **generate and sample** diverse Synthetic User personas, tasks, situations, and preferences.
-- **Motivation**: Synthetic User "diversity" is the core value. A biased sampling undermines u-sekai's exploratory value.
+- **Question**: Investigate how to generate diverse Synthetic User **states, situations, histories, capabilities, motivations, and stories** without reducing the population to a fixed persona catalog or scripted task suite.
+- **Motivation**: fixed scenarios and static personas create a finite target that a product can overfit to. u-sekai needs fresh interaction conditions that still support meaningful comparison and replay.
 - **Initial scope**:
-  - Persona generation (rule-based / LLM-based / dataset-based)
-  - Task generation (seed / automated / human-authored)
-  - Situation generation (context / environment / device / network / time of day)
-- **Initial non-scope**: dependence on a specific model or SaaS. Final UI decision.
+  - User stories as situations / motivations rather than click-by-click procedures
+  - Prior knowledge and product familiarity
+  - Capability profiles without demographic stereotyping
+  - Device / environment / interruption / urgency / preference variation
+  - Multiple generation methods (model-based, dataset-based, rule-based, mixed)
+  - Sampling diversity and reproducibility
+- **Initial non-scope**:
+  - A permanent list of canonical personas
+  - Giving the participant the intended product workflow
+  - Dependence on one model/provider
+  - Claiming generated populations represent real-world population frequencies without calibration
 - **Dependencies**: R-02, R-03.
 - **Suggested investigation**:
-  - Compare persona generation / sampling methods (option-based / LLM-based / dataset-based)
-  - Trade off diversity against reproducibility / comparability
-  - Analyze what populations existing benchmarks / datasets assume
+  - Compare static persona suites with generated latent user-state approaches
+  - Investigate story generation that communicates life context without leaking the product solution
+  - Explore ensemble generation across models / datasets / rules
+  - Define ways to detect population collapse and repeated scenario patterns
 - **Acceptance criteria**:
-  - A comparison table of persona / task / situation generation options exists in docs
-  - Diversity metrics / bias detection options are documented
+  - Candidate user-state / story generation methods are compared
+  - Diversity, replayability, and overfitting risks are documented
+  - The boundary between generated experimental diversity and real-population representativeness is explicit
 
 ### R-07: Calibrating / validating Synthetic Users against real users
 
@@ -168,11 +194,62 @@
   - If translation is chosen: location convention, process, and reconciliation protocol documented
   - Follow-up Issue(s) opened if translation begins
 
+### R-10: Generative benchmark design and resistance to scenario overfitting
+
+- **Question**: How should u-sekai behave as a **generative benchmark / experiment generator** rather than a finite checklist, while still allowing reproducible investigation and baseline-vs-candidate comparison?
+- **Motivation**: a fixed benchmark eventually becomes a training target. Exploratory UX evaluation needs continuing exposure to unseen combinations and behaviors.
+- **Initial scope**:
+  - Fresh episode generation
+  - Seed / provenance recording
+  - Comparable populations for baseline / candidate experiments
+  - Holdout / novel / adversarial generation strategies
+  - Benchmark drift and versioning
+  - Replay of interesting episodes without turning replay cases into the whole benchmark
+- **Initial non-scope**:
+  - Final scoring formula
+  - Release-gate policy
+  - Claiming exhaustive user coverage
+- **Dependencies**: R-02, R-03, R-05, R-06, R-07.
+- **Suggested investigation**:
+  - Survey generative / procedural benchmark design
+  - Compare strict paired seeds with distribution-level comparison
+  - Investigate mechanisms for generating conditions dissimilar to prior runs
+  - Define benchmark provenance required to reproduce a finding
+- **Acceptance criteria**:
+  - A benchmark-generation model is described
+  - Reproducibility and anti-overfitting mechanisms are compared
+  - Remaining ways the product could overfit to u-sekai itself are documented
+
+### R-11: Mental models, forgetting, and evolving cognitive state
+
+- **Question**: How should a participant's beliefs, misconceptions, retained memory, attention, confidence, urgency, and preferences evolve during an episode without relying on one unlimited conversation transcript?
+- **Motivation**: a model that always receives complete history and can immediately reconstruct the correct product model is unlike an unfamiliar human user. Incorrect beliefs and forgetting must be able to persist and influence behavior.
+- **Initial scope**:
+  - Explicit participant belief / mental-model state
+  - Retention, omission, decay, distortion, and reinforcement of memory
+  - Runtime-controlled context injection
+  - Interruption and changing situation / motivation
+  - Keeping capability constraints separate from mental / preference state
+- **Initial non-scope**:
+  - Direct modification of proprietary model hidden reasoning
+  - Treating private chain-of-thought as a required artifact
+  - Final memory implementation
+- **Dependencies**: R-02, R-03.
+- **Suggested investigation**:
+  - Compare long-context transcript approaches with explicit bounded state
+  - Investigate whether structured beliefs improve persistence of misconceptions
+  - Explore how post-session interviews change when only retained memory is available
+  - Identify which cognitive-state manipulations create useful simulation versus artificial behavior
+- **Acceptance criteria**:
+  - Capability, memory, belief, and preference are conceptually separated
+  - Candidate mechanisms for bounded / evolving state are compared
+  - Known validity risks are documented
+
 ---
 
 ## Next steps
 
-1. Open the above R-01 to R-09 as individual GitHub Issues using `research-question.md` (and `investigation.md` where appropriate).
+1. Open the above R-01 to R-11 as individual GitHub Issues using `research-question.md` (and `investigation.md` where appropriate).
 2. Declare dependencies in the GitHub Issue dependency graph.
 3. Refine drafts as discussion progresses.
 4. Revisit the set for missing / duplicate / merge / removal.
