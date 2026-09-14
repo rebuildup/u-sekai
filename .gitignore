@@ -1,0 +1,58 @@
+# ---------------------------------------------------------------------------
+# Minimal .gitignore aligned with the pinned rebuildup/project-init policy.
+# No language-specific patterns yet — implementation language is undecided.
+# ---------------------------------------------------------------------------
+
+# OS / editor
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+*~
+
+# IDE
+.idea/
+.vscode/
+*.iml
+
+# Temporary work area
+.tmp/
+*.tmp
+
+# External reference repositories (checked out)
+.reference/
+
+# Environment variables (real secrets are ignored; examples are committed)
+.env
+.env.*
+!.env.example
+!.env.development.example
+!.env.production.example
+
+# Node / Bun (loose, in preparation for future introduction)
+node_modules/
+.pnp/
+.pnp.js
+.yarn/
+bun.lockb
+
+# Build artifacts (loose, in preparation for future introduction)
+dist/
+build/
+out/
+coverage/
+
+# Logs
+*.log
+logs/
+
+# Python (defensive, to avoid accidental introduction until policy allows it)
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# Local CLI / agent cache
+.claude.local/
+*.local
