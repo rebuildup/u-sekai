@@ -110,25 +110,40 @@ The pinned upstream policy defaults internal docs / Issues / PRs to Japanese. u-
 | --- | --- |
 | Source code(filename, identifier, comment, log, config identifier) | English |
 | Commit message | English `<work-prefix>: <extremely concise title>` |
-| Internal development docs | English |
-| `README.md` / `CONTRIBUTING.md` | English |
+| `README.md` / `CONTRIBUTING.md` / `CLAUDE.md` / u-sekai-authored docs | English |
 | GitHub Issue title / body | English |
 | PR title / body / review discussion | English |
+| `.claude/skills/*.md` (upstream-authored Skills) | **Japanese (upstream default — deliberate exception)** |
 | Branch names | identifier / version only |
 
 If a contributor prefers Japanese for a specific file, that is fine locally but should not block international review.
+
+> The Skills under `.claude/skills/` are currently kept in Japanese because they are direct copies from the pinned upstream `rebuildup/project-init@release-0-1-1` source. Translating them risks semantic drift relative to the pinned reference. Translation is tracked as a follow-up research issue (R-09 in [`docs/research-issues/README.md`](./docs/research-issues/README.md)) and is **not** part of this init commit.
 
 ## 8. Skill discovery
 
 This file plus the relevant Skill under `.claude/skills/` are the only documents to read for a normal task. Do not re-read the upstream `PROMPT.*.md` files from `.tmp/project-init/` on every task — they are reference material, not per-task context.
 
-Currently installed Skills(phase-appropriate subset):
+All 14 Skills from the pinned upstream source are installed under `.claude/skills/`. Load only the Skills relevant to the current task.
 
-- [`.claude/skills/engineering-decisions/`](./.claude/skills/engineering-decisions/SKILL.md) — decision precedence, user escalation, "what not to decide yet"
-- [`.claude/skills/github-delivery/`](./.claude/skills/github-delivery/SKILL.md) — Issue / PR / weekly release / Draft PR lifecycle / merge authorization separation
-- [`.claude/skills/onboarding/`](./.claude/skills/onboarding/SKILL.md) — fresh contributor / fresh agent onboarding, repository-controlled knowledge design
+| Skill | Purpose |
+| --- | --- |
+| `engineering-decisions` | Decision precedence, naming/design/ADR/dependency adoption, compatibility, escalation |
+| `design-refinement` | Evidence reading, fact/decision separation, dependency-aware decision frontier |
+| `writing-discipline` | Select → Compose → Reread: convert context dumps to reader-oriented artifacts |
+| `interaction-discipline` | Preserve agent-owned work, present verified state / blockers / dependencies actionably |
+| `github-delivery` | Issue / PR / weekly release / stacked PR / Draft PR lifecycle / merge authorization separation |
+| `linear-release-control` | Optional Linear profile for release planning / health reconciliation |
+| `parallel-orchestration` | Subagent decomposition, snapshot/result, stack-ready dependency integration |
+| `sandbox-runtime` | Isolated runtime and cross-platform portability |
+| `worktree-workflow` | Worktrunk-based WSL/Linux worktree operations, project-local hooks, host port/process lifecycle |
+| `quality-gate` | Stack-aware quality profile, current-SHA revalidation, verification taxonomy, GitHub Actions efficiency |
+| `policy-evaluation` | Execution profile, deterministic/latent policy eval, blind comparative evaluation, context budget |
+| `security-maintenance` | Framework/runtime vulnerability intake / triage / remediation |
+| `onboarding` | Fresh contributor / fresh agent onboarding, repository-controlled knowledge design |
+| `agent-recovery` | Session / sandbox / context interruption recovery |
 
-Additional Skills exist in the pinned upstream source at `.tmp/project-init/skills/` (e.g. `quality-gate`, `sandbox-runtime`, `agent-recovery`, `security-maintenance`, `parallel-orchestration`, `policy-evaluation`, `design-refinement`, `writing-discipline`, `interaction-discipline`, `linear-release-control`, `worktree-workflow`). **Install them only when the phase actually needs them**, not before.
+The Skills are written in Japanese (see Section 7 for the rationale). When reconciling with upstream, compare against `.tmp/project-init/skills/`.
 
 Do **not** introduce CI workflow / formatter / lint / type-check / `Containerfile` / `.py` script until the implementation language is decided and implementation artifacts exist.
 
@@ -149,9 +164,7 @@ This file / Skills / templates / Issue configuration is **idempotent reconciliat
 
 ## References (progressive disclosure)
 
-- [`.claude/skills/engineering-decisions/`](./.claude/skills/engineering-decisions/SKILL.md)
-- [`.claude/skills/github-delivery/`](./.claude/skills/github-delivery/SKILL.md)
-- [`.claude/skills/onboarding/`](./.claude/skills/onboarding/SKILL.md)
+- [`.claude/skills/`](./.claude/skills/) — all installed skills (see Section 8 for the list)
 - [`CONTRIBUTING.md`](./CONTRIBUTING.md) — contribution policy (research / design phase)
 - [`README.md`](./README.md) — vision / non-goals / current status
 - [`docs/research-issues/`](./docs/research-issues/) — draft research questions

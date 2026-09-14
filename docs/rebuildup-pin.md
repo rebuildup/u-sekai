@@ -47,10 +47,13 @@ The upstream policy at `release-0-1-1` specifies a language convention (internal
 | Public-facing docs (README, CONTRIBUTING) | Japanese | **English** |
 | Issue title / body | Japanese | **English** |
 | PR title / body / review discussion | Japanese | **English** |
-| Internal development docs | Japanese | **English** |
+| Internal development docs (CLAUDE.md, u-sekai-authored docs) | Japanese | **English** |
+| `.claude/skills/*.md` (upstream-authored Skills, copied as-is) | Japanese | **Japanese — deliberate exception** |
 | Source code | English | English (no change) |
 | Commit messages | English | English (no change) |
 | Branch names | identifier / version only | identifier / version only (no change) |
+
+> **Note on the Skills exception**: u-sekai copies the Skills verbatim from the pinned upstream source to avoid semantic drift relative to the pinned reference. The Skills are the canonical policy contract; translating them risks divergence from the upstream reference, so translation is deferred to a follow-up research Issue (R-09 in [`docs/research-issues/README.md`](./research-issues/README.md)).
 
 Other upstream rules (weekly sprint, `release-x-y-z` branches, `<issue-number>` ticket branches, GitHub Issue dependency graph as canonical dependency SoT, public-repository `main` protection, merge authorization separation from PR readiness, etc.) are followed as-is.
 
