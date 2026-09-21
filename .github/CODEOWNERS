@@ -1,0 +1,29 @@
+# CODEOWNERS
+#
+# This file lists the people / teams who should be requested as reviewers for
+# files matching the patterns below. Patterns follow GitHub's CODEOWNERS
+# format (last matching pattern wins).
+#
+# Until more owners are added, the project lead (@rebuildup) is the default
+# reviewer. When meaningful separate reviewers exist, request them explicitly
+# rather than self-assigning as reviewer just to fill the field.
+
+# Default owner for everything
+* @rebuildup
+
+# Project-local policy files: explicitly require project-lead review
+/CLAUDE.md             @rebuildup
+/CONTRIBUTING.md       @rebuildup
+/README.md             @rebuildup
+/LICENSE               @rebuildup
+
+# AI agent configuration
+/.claude/              @rebuildup
+
+# Docs
+/docs/                 @rebuildup
+
+# GitHub workflow definitions and CODEOWNERS itself
+/.github/CODEOWNERS             @rebuildup
+/.github/ISSUE_TEMPLATE/        @rebuildup
+/.github/workflows/             @rebuildup

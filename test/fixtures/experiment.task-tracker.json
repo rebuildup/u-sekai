@@ -1,0 +1,31 @@
+{
+  "id": "demo-task-tracker",
+  "environment": { "kind": "demo", "app": "task-tracker" },
+  "userStory": "You have several things due tomorrow. You are using this service for the first time. You want to get organised quickly.",
+  "participants": [
+    {
+      "id": "p-visual-short-memory",
+      "personaPrompt": "You are a first-time visitor to this task tracker. You can see a page but not the underlying DOM. Your memory of past steps is limited to the most recent 2.",
+      "capability": {
+        "observation": "visual",
+        "action": "visualOnly",
+        "memory": { "kind": "limitedRecent", "windowSteps": 2 }
+      },
+      "reasoner": { "provider": "scripted", "seed": "alpha" }
+    },
+    {
+      "id": "p-full-history",
+      "personaPrompt": "You are a first-time visitor to this task tracker. You see the page plus a structured ARIA-derived summary. You remember every step.",
+      "capability": {
+        "observation": "visualPlusAria",
+        "action": "visualOnly",
+        "memory": { "kind": "fullHistory" }
+      },
+      "reasoner": { "provider": "scripted", "seed": "beta" }
+    }
+  ],
+  "budget": { "maxStepsPerParticipant": 6 },
+  "observer": { "provider": "scripted", "seed": "observer" },
+  "outDir": "./runs",
+  "seed": "demo"
+}
