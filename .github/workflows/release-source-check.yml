@@ -20,7 +20,7 @@ permissions:
 
 jobs:
   release-source-check:
-    name: Validate PR source branch
+    name: release-source-check
     runs-on: ubuntu-latest
     steps:
       - name: Check that head branch matches release-<major>-<minor>-<patch>

@@ -11,12 +11,10 @@ export default defineConfig({
     testTimeout: 30_000,
     hookTimeout: 30_000,
     pool: 'forks',
-    poolOptions: {
-      forks: {
-        // integration and e2e tests bind to ephemeral ports; keep one
-        // worker per test file so port allocation never collides.
-        singleFork: false,
-      },
+    // integration and e2e tests bind to ephemeral ports; keep one
+    // worker per test file so port allocation never collides.
+    forks: {
+      singleFork: false,
     },
     sequence: {
       // Keep CI deterministic: integration -> e2e -> unit.

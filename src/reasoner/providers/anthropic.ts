@@ -16,9 +16,10 @@ import type { ParticipantAction } from '../../domain/capability.js';
 import { ProviderError } from '../../domain/errors.js';
 
 const DEFAULT_MODEL = 'claude-3-5-sonnet-latest';
-const ENDPOINT = 'https://api.anthropic.com/v1/messages';
+const DEFAULT_ENDPOINT = 'https://api.anthropic.com/v1/messages';
 const ANTHROPIC_VERSION = '2023-06-01';
 const ENV_KEY = 'ANTHROPIC_API_KEY';
+const ENV_BASE_URL = 'ANTHROPIC_BASE_URL';
 
 export function anthropicReasoner(
   config: ReasonerConfig,
@@ -31,11 +32,13 @@ export function anthropicReasoner(
       'anthropic',
     );
   }
+  const baseUrl = process.env[ENV_BASE_URL] ?? DEFAULT_ENDPOINT;
+  const endpoint = baseUrl.replace(/\/+$/, '') + '/v1/messages';
   const modelId = config.modelId ?? DEFAULT_MODEL;
   return {
     providerId: 'anthropic',
     modelId,
-    complete: async (request) => invokeAnthropic(request, modelId, apiKey, config.seed),
+    complete: async (request) => invokeAnthropic(request, modelId, apiKey, endpoint, config.seed),
   };
 }
 
@@ -43,6 +46,7 @@ async function invokeAnthropic(
   request: ReasonerRequest,
   modelId: string,
   apiKey: string,
+  endpoint: string,
   seed: string | undefined,
 ): Promise<ReasonerResponse> {
   const body = {
@@ -57,7 +61,7 @@ async function invokeAnthropic(
 
   let response: Response;
   try {
-    response = await fetch(ENDPOINT, {
+    response = await fetch(endpoint, {
       method: 'POST',
       headers: {
         'content-type': 'application/json',

@@ -4,6 +4,10 @@ name: Manual live smoke (Anthropic)
 # pull-request; opt in via the Actions UI or via workflow_dispatch from
 # an API call. Requires secrets.ANTHROPIC_API_KEY configured at the repo
 # level.
+#
+# Behaviour when ANTHROPIC_API_KEY is missing: the job FAILS with a clear
+# "not run" message. We intentionally do NOT silently skip the smoke,
+# because a green check would falsely signal coverage to a release gate.
 
 on:
   workflow_dispatch:
@@ -26,6 +30,8 @@ jobs:
     timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - uses: actions/setup-node@v4
         with:
           node-version: '24'
@@ -34,14 +40,25 @@ jobs:
         run: npm ci
       - name: Build
         run: npm run build
+      - name: Install Playwright browser (only when adapter=playwright)
+        if: ${{ inputs.adapter == 'playwright' }}
+        run: npx playwright install --with-deps chromium
       - name: Live smoke against Anthropic
-        if: ${{ secrets.ANTHROPIC_API_KEY != '' }}
+        id: smoke
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          EXPERIMENT_PATH: ${{ inputs.experiment }}
+          ADAPTER_NAME: ${{ inputs.adapter }}
         run: |
+          if [ -z "${ANTHROPIC_API_KEY:-}" ]; then
+            echo "::error::ANTHROPIC_API_KEY is not configured for this repository."
+            echo "::error::Manual live smoke did NOT run. This is intentional — see workflow header."
+            echo "::error::Configure ANTHROPIC_API_KEY at repo Settings -> Secrets and re-run."
+            exit 1
+          fi
           mkdir -p runs
-          node dist/cli/index.js run "${{ inputs.experiment }}" \
+          node dist/cli/index.js run "$EXPERIMENT_PATH" \
             --reasoner anthropic \
             --observer-reasoner anthropic \
-            --adapter "${{ inputs.adapter }}" \
+            --adapter "$ADAPTER_NAME" \
             --out runs

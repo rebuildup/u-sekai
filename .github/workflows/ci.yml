@@ -11,11 +11,13 @@ permissions:
 
 jobs:
   ci:
-    name: lint + typecheck + test + build
+    name: lint + typecheck + build + test
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - uses: actions/setup-node@v4
         with:
           node-version: '24'
@@ -26,7 +28,7 @@ jobs:
         run: npm run lint
       - name: Typecheck
         run: npm run typecheck
-      - name: Test (unit + integration + e2e)
-        run: npm run test
       - name: Build
         run: npm run build
+      - name: Test (unit + integration + e2e against compiled CLI)
+        run: npm run test
