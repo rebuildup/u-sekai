@@ -2,7 +2,6 @@
  * Experiment runner. Orchestrates participants -> observer -> artifact.
  */
 
-import * as path from 'node:path';
 import { promises as fs } from 'node:fs';
 import type {
   ExperimentDefinition,
@@ -17,7 +16,7 @@ import type { RunResult } from '../domain/result.js';
 import type { SelfReport } from '../domain/self-report.js';
 import type { Reasoner } from '../domain/reasoner.js';
 import type { BrowserAdapter } from '../adapter/browser/interface.js';
-import { InMemoryRecorder, FileRecorder } from '../evidence/recorder.js';
+import { InMemoryRecorder } from '../evidence/recorder.js';
 import { FileArtifactIO } from '../evidence/artifact.js';
 import { createReasoner } from '../reasoner/interface.js';
 import { runParticipant } from '../participant/runtime.js';
@@ -305,13 +304,7 @@ async function writeArtifact(
     reasoner: p.reasoner,
   }])));
 
-  const fileRecorder = new FileRecorder(async (line) => {
-    await fs.appendFile(path.join(io.rootDir, 'events.ndjson'), line, 'utf8');
-  });
-  for (const e of allEvents) {
-    await fileRecorder.append(e);
-  }
-  await fileRecorder.flush();
+  await io.writeEvents(allEvents);
 
   for (const p of participants) {
     for (const obs of p.observations) {
