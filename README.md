@@ -29,6 +29,13 @@ experiment definition
 
 ---
 
+## Vision
+
+The project's conceptual thesis is documented in [`docs/vision.md`](./docs/vision.md).
+It describes capability-constrained Synthetic Users, open-ended exploration,
+subjective participant evidence, and generative evaluation without making the
+current 0.1.0 implementation choices part of the permanent product identity.
+
 ## What u-sekai actually does in 0.1.0
 
 - Loads an `ExperimentDefinition` from a JSON file.
