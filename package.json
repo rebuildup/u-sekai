@@ -37,7 +37,8 @@
     "test:integration": "vitest run --dir test/integration --reporter=default",
     "test:e2e": "vitest run --dir test/e2e --reporter=default",
     "demo:server": "node --import tsx ./src/demo/environment/server.ts",
-    "ci": "npm run lint && npm run typecheck && npm run build && npm run test"
+    "ci": "npm run lint && npm run typecheck && npm run version:check && npm run build && npm run test",
+    "version:check": "node scripts/check-version-sync.mjs"
   },
   "dependencies": {
     "playwright": "^1.48.0"

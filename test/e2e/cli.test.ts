@@ -12,6 +12,7 @@ import { spawn } from 'node:child_process';
 import { promises as fs } from 'node:fs';
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { VERSION } from '../../src/version.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(here, '..', '..');
@@ -44,11 +45,12 @@ describe('e2e: u-sekai run', () => {
     expect(runDirs.length).toBeGreaterThanOrEqual(1);
 
     // An artifact directory exists for the run.
-    const runId = runDirs.find((d) => d.startsWith('demo-0.1.0')) ?? runDirs[0]!;
+    const runId = runDirs.find((d) => d.startsWith('demo-')) ?? runDirs[0]!;
     const runDir = path.join(outDir, runId);
     const manifestRaw = await fs.readFile(path.join(runDir, 'manifest.json'), 'utf8');
     const manifest = JSON.parse(manifestRaw) as Record<string, unknown>;
     expect(manifest.runId).toBe(runId);
+    expect(manifest.packageVersion).toBe(VERSION);
 
     const resultRaw = await fs.readFile(path.join(runDir, 'result.json'), 'utf8');
     const result = JSON.parse(resultRaw) as { terminationReasons: Record<string, string>; evidence: { stepCountByParticipant: Record<string, number> } };
@@ -71,7 +73,7 @@ describe('e2e: u-sekai run', () => {
   it('prints version', async () => {
     const out = await runCli([cliPath, '--version']);
     expect(out.code).toBe(0);
-    expect(out.stdout.trim()).toBe('0.1.0');
+    expect(out.stdout.trim()).toBe(VERSION);
   });
 });
 

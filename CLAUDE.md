@@ -3,7 +3,7 @@
 > Dispatcher file for AI coding agents / AI agents.
 > Detailed rules are progressively disclosed into `.claude/skills/` and the linked docs.
 >
-> This file is tuned for the **implementation phase**. The 0.1.0 release
+> This file is tuned for the **implementation phase**. The current release
 > ships a functional vertical slice; the research backlog is tracked
 > under [`docs/research-issues/`](./docs/research-issues/) and is not a
 > release blocker.
@@ -15,7 +15,7 @@
 - **Project name**: u-sekai
 - **Vision**: Build a general-purpose research infrastructure that drives **Synthetic Users** (AI agents standing in for human users with diverse capabilities, perceptions, operating environments, memories, preferences, and situations) to **explore digital environments such as Web apps** in order to surface unknown usage patterns, mistakes, perception gaps, and subjective UX.
 - **Initial target**: Web environments, but the concept itself is **not Web-limited**.
-- **Current phase**: **implementation phase**. The 0.1.0 functional MVP is shipping (see [`README.md`](./README.md) Quick Start, [`docs/architecture.md`](./docs/architecture.md), and ADR-0004..0007).
+- **Current phase**: **implementation phase**. The functional MVP is shipping (see [`README.md`](./README.md) Quick Start, [`docs/architecture.md`](./docs/architecture.md), and ADR-0004..0007).
 - **Non-goals**: replacement for fixed E2E tests; production traffic replay; lock-in to a single Web framework or SaaS; foundation-model-as-domain-model; auto-generated universal UX score.
 
 See [`README.md`](./README.md) and [`CONTRIBUTING.md`](./CONTRIBUTING.md) for details.
@@ -40,7 +40,7 @@ Conversation history, native session IDs, agent-private memory, local shell hist
 - **Synthetic Users are not real users.** README and `docs/non-reality.md` carry the disclaimer; do not delete it in a refinement pass.
 - **Reasoner provider boundary is HTTP-only.** No SDK lock-in inside `src/`. See ADR-0005.
 - **CI never depends on external API keys.** Manual live-smoke is a separate `workflow_dispatch` workflow.
-- **Research backlog (`docs/research-issues/`)** is not a 0.1.0 release blocker; the functional MVP is. Do not regress implementation to research mid-release.
+- **Research backlog (`docs/research-issues/`)** is not a release blocker; the functional MVP is. Do not regress implementation to research mid-release.
 
 ## 4. What to do in this phase
 

@@ -27,5 +27,5 @@
   "budget": { "maxStepsPerParticipant": 6 },
   "observer": { "provider": "scripted", "seed": "observer" },
   "outDir": "./runs",
-  "seed": "demo-0.1.0"
+  "seed": "demo"
 }

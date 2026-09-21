@@ -1,8 +1,13 @@
 # u-sekai
 
+[![CI](https://github.com/rebuildup/u-sekai/actions/workflows/ci.yml/badge.svg)](https://github.com/rebuildup/u-sekai/actions/workflows/ci.yml)
+[![Version](https://img.shields.io/github/package-json/v/rebuildup/u-sekai?branch=main&label=version)](https://github.com/rebuildup/u-sekai/blob/main/package.json)
+[![License](https://img.shields.io/github/license/rebuildup/u-sekai)](./LICENSE)
+[![Node.js](https://img.shields.io/badge/Node.js-%3E%3D20-339933?logo=node.js&logoColor=white)](https://nodejs.org/)
+
 **A research infrastructure for exploratory user-experience evaluation by capability-constrained Synthetic Users.**
 
-0.1.0 ships a **functional vertical slice**:
+The current release ships a **functional vertical slice**:
 
 ```
 experiment definition
@@ -34,9 +39,9 @@ experiment definition
 The project's conceptual thesis is documented in [`docs/vision.md`](./docs/vision.md).
 It describes capability-constrained Synthetic Users, open-ended exploration,
 subjective participant evidence, and generative evaluation without making the
-current 0.1.0 implementation choices part of the permanent product identity.
+current implementation choices part of the permanent product identity.
 
-## What u-sekai actually does in 0.1.0
+## What u-sekai actually does
 
 - Loads an `ExperimentDefinition` from a JSON file.
 - For each participant profile, runs an inner loop that:
@@ -73,7 +78,7 @@ node dist/cli/index.js run test/fixtures/experiment.task-tracker.json \
 ls runs
 ```
 
-Expected: a directory whose name starts with `demo-0.1.0-` containing
+Expected: a directory whose name starts with `demo-` containing
 `manifest.json`, `events.ndjson`, `observations/`, `self-report/`,
 `observer-report.json`, `result.json`, and `summary.md`.
 
@@ -127,6 +132,13 @@ npm run ci         # all of the above, in order
 
 No external LLM API key is required to pass CI.
 
+### Version source of truth
+
+`package.json#version` is the canonical release version. The CLI and run
+artifacts read it directly, the release branch name is checked against it in
+CI, and the README version badge reads the same field from GitHub. Run
+`npm run version:check` to verify package-lock and release-branch alignment.
+
 ---
 
 ## Example experiment config
@@ -161,7 +173,7 @@ No external LLM API key is required to pass CI.
   "budget": { "maxStepsPerParticipant": 6 },
   "observer": { "provider": "scripted", "seed": "observer" },
   "outDir": "./runs",
-  "seed": "demo-0.1.0"
+  "seed": "demo"
 }
 ```
 

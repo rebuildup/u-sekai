@@ -25,6 +25,7 @@ import { PlaywrightAdapter } from '../adapter/browser/playwright-adapter.js';
 import { startServer } from '../demo/environment/server.js';
 import { AdapterError } from '../domain/errors.js';
 import { fileURLToPath } from 'node:url';
+import { VERSION } from '../version.js';
 
 interface ParsedArgs {
   command: 'run' | 'validate' | 'help' | 'version' | null;
@@ -66,7 +67,7 @@ function parseArgs(argv: ReadonlyArray<string>): ParsedArgs {
 }
 
 function printUsage(): void {
-  process.stdout.write(`u-sekai 0.1.0
+  process.stdout.write(`u-sekai ${VERSION}
 
 Usage:
   u-sekai run <experiment.json> [flags]
@@ -95,7 +96,7 @@ async function main(): Promise<number> {
     }
   }
   if (args.command === 'version') {
-    process.stdout.write('0.1.0\n');
+    process.stdout.write(`${VERSION}\n`);
     return 0;
   }
   if (!args.command) {

@@ -44,7 +44,7 @@ describe('full-run integration', () => {
       resolveTargetUrl: () => server.baseUrl,
     });
 
-    expect(runId).toContain('demo-0.1.0');
+    expect(runId).toContain('demo-');
     expect(Object.keys(result.terminationReasons)).toHaveLength(2);
     expect(result.participants).toHaveLength(2);
     // Both scripted participants should reach finish before the budget.

@@ -23,7 +23,10 @@ jobs:
     name: release-source-check
     runs-on: ubuntu-latest
     steps:
-      - name: Check that head branch matches release-<major>-<minor>-<patch>
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Check that head branch matches package version
         env:
           HEAD_REF: ${{ github.head_ref }}
         run: |
@@ -34,8 +37,14 @@ jobs:
 
           if [[ ! "$HEAD_REF" =~ ^release-[0-9]+-[0-9]+-[0-9]+$ ]]; then
             echo "::error::PR head branch '$HEAD_REF' is not a release-<major>-<minor>-<patch> branch."
-            echo "::error::Per u-sekai ADR-0003, only release-x-y-z -> main PRs are allowed."
             exit 1
           fi
 
-          echo "Head branch '$HEAD_REF' is a valid release branch."
+          VERSION="$(node -p "require('./package.json').version")"
+          EXPECTED_REF="release-${VERSION//./-}"
+          if [[ "$HEAD_REF" != "$EXPECTED_REF" ]]; then
+            echo "::error::PR head '$HEAD_REF' does not match package.json version '$VERSION' (expected '$EXPECTED_REF')."
+            exit 1
+          fi
+
+          echo "Head branch '$HEAD_REF' matches package.json version '$VERSION'."

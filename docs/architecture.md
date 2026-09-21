@@ -1,4 +1,4 @@
-# u-sekai architecture (0.1.0)
+# u-sekai architecture
 
 ```
                    ExperimentDefinition (JSON)
@@ -31,7 +31,7 @@
 Three orthogonal axes, enforced at the runtime layer:
 
 - `observation`: `visual` (default) or `visualPlusAria`.
-- `action`: `visualOnly` (the only value at 0.1.0). Six human-facing
+- `action`: `visualOnly` (the only value in the current functional MVP). Six human-facing
   primitives: `clickByCoords`, `tapByCoords`, `typeText`, `scroll`,
   `wait`, `finish`.
 - `memory`: `fullHistory` or `limitedRecent{N}`.

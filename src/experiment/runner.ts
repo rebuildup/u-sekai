@@ -22,6 +22,7 @@ import { createReasoner } from '../reasoner/interface.js';
 import { runParticipant } from '../participant/runtime.js';
 import { runObserver } from '../observer/runtime.js';
 import { fnv1aHex } from '../evidence/hash.js';
+import { VERSION } from '../version.js';
 
 export interface RunExperimentOptions {
   readonly experiment: ExperimentDefinition;
@@ -51,7 +52,7 @@ export async function runExperiment(opts: RunExperimentOptions): Promise<RunExpe
     ts: startedAt,
     experimentPath: opts.experiment.outDir,
     seed: opts.experiment.seed,
-    packageVersion: pkgVersion(),
+    packageVersion: VERSION,
   });
 
   const targetUrl = opts.resolveTargetUrl(opts.experiment.environment);
@@ -132,10 +133,6 @@ export async function runExperiment(opts: RunExperimentOptions): Promise<RunExpe
   await writeArtifact(opts.experiment.outDir, runId, opts.experiment, recorder, participants, observerReport, result);
 
   return { result, runId };
-}
-
-function pkgVersion(): string {
-  return '0.1.0';
 }
 
 function newRunId(seed: string): string {
@@ -284,7 +281,7 @@ async function writeArtifact(
     experimentId: experiment.id,
     seed: experiment.seed,
     experimentPath: experiment.outDir,
-    packageVersion: '0.1.0',
+    packageVersion: VERSION,
     startedAt: result.startedAt,
     endedAt: result.endedAt,
     terminationReasons: result.terminationReasons,

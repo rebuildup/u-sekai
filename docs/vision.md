@@ -1,8 +1,8 @@
 # Vision
 
-> Status: conceptual direction for the research / design phase.
+> Status: durable conceptual product / research vision.
 >
-> This document records the current thesis of u-sekai. It is intentionally **not** an architecture specification. Implementation technologies, APIs, runtime structure, models, drivers, scoring methods, and release gates remain open research questions.
+> This document records the thesis of u-sekai. It is intentionally **not** an architecture specification. Current releases make concrete implementation choices, recorded in ADRs and `docs/architecture.md`; those choices may evolve without becoming permanent product-identity commitments.
 
 ## 1. Why u-sekai exists
 
@@ -448,7 +448,7 @@ Calibration against real behavior should be treated as a first-class research pr
 
 ## 19. Current conceptual commitments
 
-At this research stage, the following are the strongest working commitments:
+The following are the strongest durable conceptual commitments:
 
 1. u-sekai is exploratory UX infrastructure, not a replacement for deterministic E2E testing.
 2. The product being tested is the primary evaluation target; the agent is an experimental instrument.
@@ -467,7 +467,7 @@ Everything below these principles remains open to research.
 
 ## 20. Open design frontier
 
-The project has intentionally not yet decided:
+The current implementation necessarily makes concrete choices, but the following remain open-ended beyond those release-specific decisions:
 
 - the execution architecture,
 - the programming language,

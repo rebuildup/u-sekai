@@ -4,6 +4,7 @@
  * helpers (`__testHelpers` exports in submodules) are deliberately not
  * rolled up to keep the public surface small.
  */
+export { VERSION } from './version.js';
 export * from './domain/index.js';
 export {
   applyParticipantObservation,

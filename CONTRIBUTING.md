@@ -1,6 +1,6 @@
 # Contributing
 
-u-sekai is in the **implementation phase**. The 0.1.0 functional MVP
+u-sekai is in the **implementation phase**. The functional MVP
 ships a complete vertical slice; the research backlog
 (`docs/research-issues/`) continues in parallel and is open for
 contribution.
@@ -35,7 +35,7 @@ This is a deliberate **override** of the pinned upstream policy's "internal docs
 - Documentation, ADRs, and research-issue drafts.
 - CI / quality-gate improvements that keep CI self-contained.
 
-Out of 0.1.0 scope (still useful, but do not land on a release branch
+Out of the current release scope (still useful, but do not land on a release branch
 without an explicit umbrella Issue):
 
 - Real-user calibration, automatic persona generation, multi-provider
