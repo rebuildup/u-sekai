@@ -22,6 +22,20 @@ Source code and commit messages will also be English once implementation begins.
 
 This is a deliberate **override** of the pinned upstream policy's "internal docs in Japanese" convention. See [`docs/rebuildup-pin.md`](./docs/rebuildup-pin.md) for the override record.
 
+## README translations
+
+`README.md` is the canonical README and project-state source. Localized
+README files (`README.ja.md`, `README.zh-CN.md`, `README.ko.md`) are
+translations only.
+
+- Keep the language switcher at the top of every README.
+- Preserve commands, identifiers, file paths, configuration keys, and technical
+  contracts exactly where translation would change their meaning.
+- When a change materially affects the canonical README, update affected
+  translations in the same release when practical.
+- A translation must not introduce a feature, guarantee, limitation, or design
+  decision that does not exist in the canonical README.
+
 ## 2. What you can contribute
 
 - Implementation changes that keep the capability / action / memory

@@ -1,5 +1,9 @@
 # u-sekai
 
+**English** | [日本語](./README.ja.md) | [简体中文](./README.zh-CN.md) | [한국어](./README.ko.md)
+
+> English is the canonical README. Translations follow this file and must not introduce independent specification.
+
 [![CI](https://github.com/rebuildup/u-sekai/actions/workflows/ci.yml/badge.svg)](https://github.com/rebuildup/u-sekai/actions/workflows/ci.yml)
 [![Version](https://img.shields.io/github/package-json/v/rebuildup/u-sekai?branch=main&label=version)](https://github.com/rebuildup/u-sekai/blob/main/package.json)
 [![License](https://img.shields.io/github/license/rebuildup/u-sekai)](./LICENSE)
@@ -254,6 +258,9 @@ decisions.
 ```text
 .
 ├─ README.md
+├─ README.ja.md
+├─ README.zh-CN.md
+├─ README.ko.md
 ├─ CONTRIBUTING.md
 ├─ LICENSE
 ├─ package.json
