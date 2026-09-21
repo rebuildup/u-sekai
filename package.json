@@ -1,0 +1,54 @@
+{
+  "name": "u-sekai",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Research infrastructure for exploratory user-experience evaluation by capability-constrained Synthetic Users.",
+  "license": "MIT",
+  "engines": {
+    "node": ">=20"
+  },
+  "bin": {
+    "u-sekai": "./dist/cli/index.js"
+  },
+  "exports": {
+    ".": "./dist/index.js",
+    "./domain": "./dist/domain/index.js",
+    "./capability": "./dist/capability/index.js",
+    "./reasoner": "./dist/reasoner/index.js",
+    "./participant": "./dist/participant/index.js",
+    "./observer": "./dist/observer/index.js",
+    "./evidence": "./dist/evidence/index.js",
+    "./adapter": "./dist/adapter/index.js",
+    "./experiment": "./dist/experiment/index.js"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE",
+    "docs"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint .",
+    "test": "vitest run --reporter=default",
+    "test:unit": "vitest run --dir test/unit --reporter=default",
+    "test:integration": "vitest run --dir test/integration --reporter=default",
+    "test:e2e": "vitest run --dir test/e2e --reporter=default",
+    "demo:server": "node --import tsx ./src/demo/environment/server.ts",
+    "ci": "npm run lint && npm run typecheck && npm run test && npm run build"
+  },
+  "dependencies": {
+    "playwright": "^1.48.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "@typescript-eslint/eslint-plugin": "^8.18.0",
+    "@typescript-eslint/parser": "^8.18.0",
+    "eslint": "^9.16.0",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2",
+    "vitest": "^2.1.8"
+  }
+}

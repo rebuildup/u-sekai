@@ -1,0 +1,47 @@
+name: Manual live smoke (Anthropic)
+
+# Manual smoke against a real LLM provider. Not triggered by any push or
+# pull-request; opt in via the Actions UI or via workflow_dispatch from
+# an API call. Requires secrets.ANTHROPIC_API_KEY configured at the repo
+# level.
+
+on:
+  workflow_dispatch:
+    inputs:
+      experiment:
+        description: 'Experiment fixture path relative to repo root.'
+        required: true
+        default: 'test/fixtures/experiment.task-tracker.json'
+      adapter:
+        description: 'Browser adapter (http|playwright).'
+        required: true
+        default: 'http'
+
+permissions:
+  contents: read
+
+jobs:
+  live-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: 'npm'
+      - name: Install dependencies
+        run: npm ci
+      - name: Build
+        run: npm run build
+      - name: Live smoke against Anthropic
+        if: ${{ secrets.ANTHROPIC_API_KEY != '' }}
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          mkdir -p runs
+          node dist/cli/index.js run "${{ inputs.experiment }}" \
+            --reasoner anthropic \
+            --observer-reasoner anthropic \
+            --adapter "${{ inputs.adapter }}" \
+            --out runs

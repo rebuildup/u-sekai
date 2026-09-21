@@ -1,8 +1,12 @@
 # Contributing
 
-u-sekai is a **research / design phase** project. Implementation contributions are not yet accepted; instead, we welcome **participation in the research and design discussion** and **pointers to relevant literature and existing work**.
+u-sekai is in the **implementation phase**. The 0.1.0 functional MVP
+ships a complete vertical slice; the research backlog
+(`docs/research-issues/`) continues in parallel and is open for
+contribution.
 
-This document covers how to join the conversation and how Issues / PRs flow through GitHub. It will be extended with implementation guidelines once the design phase closes.
+This document covers Issue / PR conventions, code expectations, and the
+release workflow.
 
 ---
 
@@ -18,15 +22,26 @@ Source code and commit messages will also be English once implementation begins.
 
 This is a deliberate **override** of the pinned upstream policy's "internal docs in Japanese" convention. See [`docs/rebuildup-pin.md`](./docs/rebuildup-pin.md) for the override record.
 
-## 2. Contributions welcome in this phase
+## 2. What you can contribute
 
-- Adding references (papers, OSS, benchmarks, blog posts, talks) to the drafts in [`docs/research-issues/`](docs/research-issues/)
-- Proposing new research questions (file an Issue using `research-question.md`, or add a draft to `docs/research-issues/`)
-- Proposing investigation steps (file an Issue using `investigation.md`)
-- Refining terminology, scope, and non-scope statements
-- Reviewing and updating existing drafts
+- Implementation changes that keep the capability / action / memory
+  boundaries in the runtime layer (see ADR-0006 and
+  [`docs/architecture.md`](docs/architecture.md)).
+- New `Reasoner` providers that follow ADR-0005 (HTTP only; no SDK
+  lock-in inside `src/`).
+- New `BrowserAdapter` implementations that expose only the human-facing
+  primitives to participants.
+- New self-contained demo environments alongside `src/demo/environment/`.
+- Documentation, ADRs, and research-issue drafts.
+- CI / quality-gate improvements that keep CI self-contained.
 
-**Implementation contributions (code, configs, CI changes, etc.) are not accepted in this phase.** The architecture and language are still undecided.
+Out of 0.1.0 scope (still useful, but do not land on a release branch
+without an explicit umbrella Issue):
+
+- Real-user calibration, automatic persona generation, multi-provider
+  matrices, accessibility simulation, advanced cognitive / forgetting
+  models, GUI dashboards, Firecracker / Kubernetes, distributed
+  execution.
 
 ## 3. GitHub Issue workflow
 
@@ -40,6 +55,7 @@ We follow the pinned rebuildup policy: **GitHub Issues are the durable work / de
   - `investigation.md` — concrete investigation steps
 - Title and body must be in **English**.
 - Include purpose, acceptance criteria, scope / non-scope, dependencies, target phase, and (when relevant) accountable assignee.
+- Implementation issues should reference the relevant ADR(s) and call out which capability axes change.
 
 ### Dependencies
 

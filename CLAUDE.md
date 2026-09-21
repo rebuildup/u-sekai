@@ -3,7 +3,10 @@
 > Dispatcher file for AI coding agents / AI agents.
 > Detailed rules are progressively disclosed into `.claude/skills/` and the linked docs.
 >
-> This file is tuned for the **research / design phase**. It will be recomposed when implementation begins.
+> This file is tuned for the **implementation phase**. The 0.1.0 release
+> ships a functional vertical slice; the research backlog is tracked
+> under [`docs/research-issues/`](./docs/research-issues/) and is not a
+> release blocker.
 
 ---
 
@@ -12,8 +15,8 @@
 - **Project name**: u-sekai
 - **Vision**: Build a general-purpose research infrastructure that drives **Synthetic Users** (AI agents standing in for human users with diverse capabilities, perceptions, operating environments, memories, preferences, and situations) to **explore digital environments such as Web apps** in order to surface unknown usage patterns, mistakes, perception gaps, and subjective UX.
 - **Initial target**: Web environments, but the concept itself is **not Web-limited**.
-- **Current phase**: **research / design phase**. Implementation has not started.
-- **Non-goals**: replacement for fixed E2E tests; production traffic replay; lock-in to a single Web framework or SaaS.
+- **Current phase**: **implementation phase**. The 0.1.0 functional MVP is shipping (see [`README.md`](./README.md) Quick Start, [`docs/architecture.md`](./docs/architecture.md), and ADR-0004..0007).
+- **Non-goals**: replacement for fixed E2E tests; production traffic replay; lock-in to a single Web framework or SaaS; foundation-model-as-domain-model; auto-generated universal UX score.
 
 See [`README.md`](./README.md) and [`CONTRIBUTING.md`](./CONTRIBUTING.md) for details.
 
@@ -30,20 +33,21 @@ See [`README.md`](./README.md) and [`CONTRIBUTING.md`](./CONTRIBUTING.md) for de
 
 Conversation history, native session IDs, agent-private memory, local shell history — **none of these are SoT**.
 
-## 3. What NOT to do in this phase
+## 3. Implementation-phase guardrails
 
-- Treat any undecided item (programming language, framework, runtime, SDK, browser automation library, agent SDK, model provider, directory structure, package layout) as **adopted** before the corresponding research Issue is resolved.
-- Write undecided items in `README.md` / `docs/` as "planned specification".
-- Prematurely introduce formatter, lint, type-check, CI workflow, `Containerfile`, `.py` script, or other tooling while the implementation language is still undecided.
-- Produce a hypothetical / spike implementation before the corresponding design decision is finalized.
-- Prioritize "writing code quickly" over "keeping later design exploration possible".
+- **Layer boundaries (ADR-0005, ADR-0006)** are enforced at compile time. Any direct import from `src/domain/**` or `src/capability/**` of a third-party SDK (Playwright, OpenAI, Anthropic SDK, langchain, ...) is forbidden by `eslint.config.js`.
+- **Capability, action, and memory enforcement live in code, not in prompts.** A capability violation MUST be recorded as a typed event (`evidence-events`) and terminate the participant with `terminationReason: 'capabilityViolation'`.
+- **Synthetic Users are not real users.** README and `docs/non-reality.md` carry the disclaimer; do not delete it in a refinement pass.
+- **Reasoner provider boundary is HTTP-only.** No SDK lock-in inside `src/`. See ADR-0005.
+- **CI never depends on external API keys.** Manual live-smoke is a separate `workflow_dispatch` workflow.
+- **Research backlog (`docs/research-issues/`)** is not a 0.1.0 release blocker; the functional MVP is. Do not regress implementation to research mid-release.
 
 ## 4. What to do in this phase
 
-- Open GitHub Issues for research questions; update the drafts in `docs/research-issues/`.
-- Add references to existing research / OSS / case studies / benchmarks to Issues / discussions.
-- Promote only **finalized** decisions to ADRs(drafts do not become ADRs).
-- Accept contributions to docs / Issues / templates / Skills only. Implementation contributions are not accepted yet.
+- Open GitHub Issues for behavioural changes that affect the public contract.
+- Promote only **finalized** decisions to ADRs; drafts in `docs/research-issues/` are not ADRs.
+- Implementation PRs follow the durable-issue workflow: one Issue = one ticket branch = one ticket PR; `release-*` aggregates to a single release PR.
+- Tests covering capability enforcement, scripted Reasoner behaviour, and end-to-end CLI invocation are non-optional.
 
 ## 5. Engineering decision precedence
 
@@ -149,12 +153,12 @@ Do **not** introduce CI workflow / formatter / lint / type-check / `Containerfil
 
 ## 9. Secret / temporary / reference policy
 
-- No secrets in commits, logs, snapshots, or agent results.
+- No secrets in commits, logs, snapshots, or agent results. The Anthropic API key (and any future provider key) is consumed via `process.env` only and **never** written to artifact files.
 - Real env files: `.env` / `.env.development` / `.env.production` — never committed.
 - Examples: `.env.example` etc. — allowed to commit.
 - Temporary artifacts: `.tmp/`(gitignored).
 - External reference repositories: `.reference/`(gitignored).
-- Do not add new `.py` scripts for automation, generation, migration, validation, build/test support, or temporary analysis. Use TypeScript / JavaScript / shell / the project's actual implementation language instead.
+- Do not add new `.py` scripts for automation, generation, migration, validation, build/test support, or temporary analysis. Use TypeScript / JavaScript / shell / the project's actual implementation language instead. The implementation language is **TypeScript (ESM, NodeNext)** per ADR-0004.
 
 ## 10. Idempotent reconciliation
 
