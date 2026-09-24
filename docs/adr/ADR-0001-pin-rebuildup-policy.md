@@ -1,7 +1,8 @@
-# ADR-0001: Pin `rebuildup/project-init@release-0-1-1` as the canonical reference policy
+# ADR-0001: Pin `rebuildup/project-init@release-0-3-0` as the canonical reference policy
 
 - **Status**: accepted
 - **Date**: 2026-09-15
+- **Updated**: 2026-09-25 — reconciled to `release-0-3-0`
 - **Deciders**: project lead (@rebuildup)
 
 ## Context
@@ -22,14 +23,14 @@ u-sekai pins `rebuildup/project-init` at:
 
 | Field | Value |
 | --- | --- |
-| Branch / ref | `release-0-1-1` |
-| Pinned commit SHA | `48432a736c47f6630b8a813081e59316392c51dc` |
+| Branch / ref | `release-0-3-0` |
+| Pinned commit SHA | `57fb4a2e5abe6f52e4fd9cb2cb88234496e47d4b` |
 | Local clone | `.tmp/project-init/`(gitignored) |
-| Refresh command | `git clone --branch release-0-1-1 --depth 1 https://github.com/rebuildup/project-init.git .tmp/project-init` |
+| Refresh command | `git clone --branch release-0-3-0 --depth 1 https://github.com/rebuildup/project-init.git .tmp/project-init` |
 
 The pin is recorded in [`docs/rebuildup-pin.md`](../rebuildup-pin.md).
 
-The 14 Skills under `.claude/skills/` are direct copies from this pinned
+The 19 Skills under `.claude/skills/` are direct copies from this pinned
 source. They are reconciled by re-running the refresh command and re-copying
 when the pin is bumped.
 
@@ -69,4 +70,4 @@ Operational:
 - [`docs/rebuildup-pin.md`](../rebuildup-pin.md)
 - [`CONTRIBUTING.md`](../../CONTRIBUTING.md)
 - [`CLAUDE.md`](../../CLAUDE.md) (Section 8 — Skill discovery)
-- Upstream: <https://github.com/rebuildup/project-init/tree/release-0-1-1>
+- Upstream: <https://github.com/rebuildup/project-init/tree/release-0-3-0>
