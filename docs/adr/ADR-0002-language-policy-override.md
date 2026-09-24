@@ -6,7 +6,7 @@
 
 ## Context
 
-The pinned upstream policy ([`rebuildup/project-init@release-0-1-1`](https://github.com/rebuildup/project-init/tree/release-0-1-1))
+The pinned upstream policy ([`rebuildup/project-init@release-0-3-0`](https://github.com/rebuildup/project-init/tree/release-0-3-0))
 defaults to Japanese for:
 
 - Internal development docs
@@ -18,7 +18,7 @@ Product Hunt and similar channels, where the audience is primarily
 English-speaking. Japanese-only documentation creates friction for
 international contributors and reviewers.
 
-However, the 14 Skills under `.claude/skills/` are direct copies of the
+However, the 19 Skills under `.claude/skills/` are direct copies of the
 upstream-authored Skills. Translating them risks semantic drift relative to
 the pinned reference, and the rebuildup policy treats Skills as the
 canonical policy contract.
