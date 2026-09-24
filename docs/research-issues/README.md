@@ -150,7 +150,7 @@
 
 ### R-09: Translate upstream Skills into English (and the future language policy)
 
-- **Question**: Decide whether / how to translate the 14 Skills under `.claude/skills/` (currently Japanese, copied verbatim from the pinned `rebuildup/project-init@release-0-1-1` source) into English, and how to keep them in sync with future upstream revisions.
+- **Question**: Decide whether / how to translate the 19 Skills under `.claude/skills/` (currently Japanese, copied verbatim from the pinned `rebuildup/project-init@release-0-3-0` source) into English, and how to keep them in sync with future upstream revisions.
 - **Motivation**: u-sekai is internationally oriented (Product Hunt and similar channels). The rest of the repository's user-facing and internal docs are written in English; only the Skills remain in Japanese because translating them risks semantic drift relative to the pinned reference. A clear translation policy (and a sync protocol) is needed before international contributors engage.
 - **Initial scope**:
   - Whether to translate the Skills (full / partial / by Skill)
