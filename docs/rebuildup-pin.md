@@ -9,22 +9,22 @@ Per the upstream rule, "explicit version pin / freeze" is what justifies referen
 | Field | Value |
 | --- | --- |
 | Repository | <https://github.com/rebuildup/project-init> |
-| Branch / ref | `release-0-1-1` |
-| Pinned commit SHA | `48432a736c47f6630b8a813081e59316392c51dc` |
+| Branch / ref | `release-0-3-0` |
+| Pinned commit SHA | `57fb4a2e5abe6f52e4fd9cb2cb88234496e47d4b` |
 | Local clone | `.tmp/project-init/`(re-cloneable from the URL above) |
 | Gitignore status | `.tmp/` is gitignored |
 
 ## Why pinned
 
 - The upstream policy evolves on `main`. Without a pin, "presence of an installed skill" is not freshness evidence, and an autonomous "no change needed" decision is not allowed.
-- `release-0-1-1` is the first tagged release we want to base our policy on. Future upgrades require an explicit ADR and a manual reconciliation.
+- `release-0-3-0` is the current stable policy baseline adopted by u-sekai. Future upgrades require an explicit Issue/ADR-backed reconciliation rather than silent drift.
 
 ## Refresh / verify commands
 
 Re-clone(overwrite the existing `.tmp/project-init/`):
 
 ```bash
-git clone --branch release-0-1-1 --depth 1 \
+git clone --branch release-0-3-0 --depth 1 \
   https://github.com/rebuildup/project-init.git \
   .tmp/project-init
 ```
@@ -33,14 +33,14 @@ Verify the pinned SHA inside the clone:
 
 ```bash
 git -C .tmp/project-init rev-parse HEAD
-# expected: 48432a736c47f6630b8a813081e59316392c51dc
+# expected: 57fb4a2e5abe6f52e4fd9cb2cb88234496e47d4b
 ```
 
-If the local clone's HEAD SHA differs from the pinned SHA above, the upstream history under the `release-0-1-1` ref has moved, which **breaks the pin**. Do not silently use the new SHA — file an Issue to evaluate the change and update this document explicitly.
+If the local clone's HEAD SHA differs from the pinned SHA above, the upstream history under the `release-0-3-0` ref has moved, which **breaks the pin**. Do not silently use the new SHA — file an Issue to evaluate the change and update this document explicitly.
 
 ## u-sekai overrides of upstream policy
 
-The upstream policy at `release-0-1-1` specifies a language convention (internal docs in Japanese, GitHub Issues/PRs in Japanese). **u-sekai deliberately overrides that convention** because the project's target audience is international (Product Hunt and similar channels).
+The upstream policy at `release-0-3-0` specifies a language convention (internal docs in Japanese, GitHub Issues/PRs in Japanese). **u-sekai deliberately overrides that convention** because the project's target audience is international (Product Hunt and similar channels).
 
 | Concern | Upstream default | u-sekai override |
 | --- | --- | --- |
@@ -63,7 +63,7 @@ Any future deviation from this override should be documented as a new ADR in `do
 
 Trigger an upgrade discussion when:
 
-- The upstream `release-0-1-x` line ships a `release-0-2-0` or later that we want to adopt.
+- A newer stable `project-init` release contains organizational changes that materially improve this project.
 - A security advisory or a breaking change on `main` makes the current pin unsafe.
 - A new Skill in the upstream is needed for the current phase (e.g. implementation phase begins and we want `quality-gate` / `sandbox-runtime` / `agent-recovery`).
 
