@@ -1,0 +1,38 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "project-init security-audit coverage ledger",
+  "type": "object",
+  "required": ["schema_version", "run_id", "source_ref", "profile", "scope", "units"],
+  "properties": {
+    "schema_version": { "type": "string", "const": "1" },
+    "run_id": { "type": "string", "minLength": 1 },
+    "source_ref": { "type": "string", "minLength": 1 },
+    "profile": { "enum": ["quick", "standard", "deep"] },
+    "scope": { "type": "array", "items": { "type": "string" }, "minItems": 1 },
+    "incomplete_reason": { "type": ["string", "null"] },
+    "units": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["coverage_id", "subsystem", "entry_surface", "principal", "boundary", "attack_class", "starting_paths", "status", "checks", "candidate_fingerprints"],
+        "properties": {
+          "coverage_id": { "type": "string", "minLength": 1 },
+          "subsystem": { "type": "string", "minLength": 1 },
+          "entry_surface": { "type": "string", "minLength": 1 },
+          "principal": { "type": "string", "minLength": 1 },
+          "boundary": { "type": "string", "minLength": 1 },
+          "attack_class": { "type": "string", "minLength": 1 },
+          "starting_paths": { "type": "array", "items": { "type": "string" }, "minItems": 1 },
+          "owner_agent": { "type": ["string", "null"] },
+          "status": { "enum": ["planned", "in_progress", "covered", "candidate", "blocked", "deferred", "out_of_scope"] },
+          "checks": { "type": "array", "items": { "type": "string" } },
+          "candidate_fingerprints": { "type": "array", "items": { "type": "string" }, "uniqueItems": true },
+          "uncovered_dependency": { "type": ["string", "null"] },
+          "prior_run_relation": { "type": ["string", "null"] }
+        },
+        "additionalProperties": false
+      }
+    }
+  },
+  "additionalProperties": false
+}
