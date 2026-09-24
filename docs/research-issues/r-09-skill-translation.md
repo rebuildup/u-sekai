@@ -2,22 +2,22 @@
 
 ## Question (from draft)
 
-Decide whether / how to translate the 14 Skills under `.claude/skills/` (currently Japanese, copied verbatim from the pinned `rebuildup/project-init@release-0-1-1` source) into English, and how to keep them in sync with future upstream revisions.
+Decide whether / how to translate the 19 Skills under `.claude/skills/` (currently Japanese, copied verbatim from the pinned `rebuildup/project-init@release-0-3-0` source) into English, and how to keep them in sync with future upstream revisions.
 
 ## Investigation summary
 
 ### What was covered
 
-- **Project-side state**: confirmed the 14 Skills are identical copies from `.tmp/project-init/skills/`; the pin in `docs/rebuildup-pin.md` records `release-0-1-1` SHA `48432a736c47f6630b8a813081e59316392c51dc`; ADR-0002 explicitly carves out the Skills as a deliberate exception to the English-only language policy; `CLAUDE.md` Section 7 restates the exception.
-- **Skill-by-skill description audit**: read the YAML frontmatter of all 14 installed Skills. 12/14 have a Japanese `description` field; 2/14 (`interaction-discipline`, `writing-discipline`) already have an English `description`. 0/14 have an English body.
-- **Upstream model**: confirmed upstream's own translation convention is `{name}.{lang}.md` (e.g., `PROMPT.ja.md` / `PROMPT.en.md`, `CODEX_ROLES.ja.md` / `CODEX_ROLES.en.md`). Upstream's Japanese is the primary specification; Skills themselves are not localized in upstream at `release-0-1-1`.
+- **Project-side state**: confirmed the 19 Skills are identical copies from `.tmp/project-init/skills/`; the pin in `docs/rebuildup-pin.md` records `release-0-3-0` SHA `57fb4a2e5abe6f52e4fd9cb2cb88234496e47d4b`; ADR-0002 explicitly carves out the Skills as a deliberate exception to the English-only language policy; `CLAUDE.md` Section 7 restates the exception.
+- **Skill-by-skill description audit**: read the YAML frontmatter of all 19 installed Skills. 17/19 have a Japanese `description` field; 2/19 (`interaction-discipline`, `writing-discipline`) already have an English `description`. 0/14 have an English body.
+- **Upstream model**: confirmed upstream's own translation convention is `{name}.{lang}.md` (e.g., `PROMPT.ja.md` / `PROMPT.en.md`, `CODEX_ROLES.ja.md` / `CODEX_ROLES.en.md`). Upstream's Japanese is the primary specification; Skills themselves are not localized in upstream at `release-0-3-0`.
 - **Skills specification**: confirmed the public Skill format (`vercel-labs/skills`, Anthropic Skills best-practices) requires only `name` and `description` in YAML frontmatter, ships one `SKILL.md` per skill directory, and has no built-in i18n / locale mechanism. `npx skills add` / `bunx skills add` resolve a single canonical `SKILL.md`.
 - **External precedent**: surveyed three public OSS projects that ship bilingual skills (`foreverse-app/character-card-skills`, `ForceInjection/awesome-skills`, `aiskillstore/marketplace/skill-i18n`).
 
 ### What was skipped and why
 
 - **Per-language audience size measurement**: u-sekai is pre-launch, so no production telemetry exists. A reader audience assumption is necessary and is recorded as an open question.
-- **Full machine-translation benchmark across all 14 Skills**: outside the scope of a policy decision. Translation quality itself is a downstream implementation concern once the policy is chosen.
+- **Full machine-translation benchmark across all 19 Skills**: outside the scope of a policy decision. Translation quality itself is a downstream implementation concern once the policy is chosen.
 - **Alternative translation paths not tied to upstream pin (e.g., fork upstream entirely)**: outside the explicit non-scope ("re-organizing or rewriting Skill content").
 - **Upstream GitHub Issue search for prior translation discussion**: the visible issue search returned no matching discussions at the time of investigation.
 
@@ -32,7 +32,7 @@ Decide whether / how to translate the 14 Skills under `.claude/skills/` (current
 
 ### F1. The current Skills exception is already creating an asymmetry that affects discovery, not just readability
 
-The Skills YAML `description` field is pre-loaded into the agent's system prompt and is the primary signal Claude uses to decide which Skill to invoke (Anthropic Skill authoring best-practices, "Writing effective descriptions"). Of the 14 installed Skills, 12 still carry Japanese `description` strings; only `interaction-discipline` and `writing-discipline` have English descriptions. This means an English-only Claude population has reduced ability to discover the other 12 Skills at all — even an agent that reads Japanese fluently will only match the description text semantically. The asymmetry is partial, not binary.
+The Skills YAML `description` field is pre-loaded into the agent's system prompt and is the primary signal Claude uses to decide which Skill to invoke (Anthropic Skill authoring best-practices, "Writing effective descriptions"). Of the 19 installed Skills, 12 still carry Japanese `description` strings; only `interaction-discipline` and `writing-discipline` have English descriptions. This means an English-only Claude population has reduced ability to discover the other 12 Skills at all — even an agent that reads Japanese fluently will only match the description text semantically. The asymmetry is partial, not binary.
 
 ### F2. The upstream policy contract uses a parallel-file convention for translation, but does not localize Skills
 
@@ -77,11 +77,11 @@ Any translation effort that touches the installed Skills must coexist with this 
 
 | Option | Scope | Skill CLI discovery | Drift surface | Maintenance cost | Reader coverage |
 | --- | --- | --- | --- | --- | --- |
-| **A1. No translation (status quo)** | None | Works (description remains Japanese) | None | Zero | International readers blocked; English-only Claude populations get reduced discovery for 12/14 Skills |
+| **A1. No translation (status quo)** | None | Works (description remains Japanese) | None | Zero | International readers blocked; English-only Claude populations get reduced discovery for 12/19 Skills |
 | **A2. Translate `description` frontmatter only** | 12 fields (2 already English) | Works (English descriptions) | Low (a few sentences per Skill) | Low (one line per Skill) | Discovery works; body still Japanese |
-| **A3. Parallel `SKILL.en.md` per Skill** | Full bilingual, all 14 Skills | Does not auto-discover `.en.md`; needs a wrapper or human convention | High (two surfaces to keep in sync) | Medium-high (re-translate on upstream change) | Full body in English; Japanese preserved as canonical |
+| **A3. Parallel `SKILL.en.md` per Skill** | Full bilingual, all 19 Skills | Does not auto-discover `.en.md`; needs a wrapper or human convention | High (two surfaces to keep in sync) | Medium-high (re-translate on upstream change) | Full body in English; Japanese preserved as canonical |
 | **A4. Replace `SKILL.md` in place with English** | Full body | Works | Maximum (immediately breaks the verbatim-copy invariant) | Medium | Single source, English; loses the upstream contract |
-| **A5. Translate by Skill priority (subset)** | 4–6 of 14 Skills (e.g., `writing-discipline`, `design-refinement`, `engineering-decisions`, `github-delivery`, `onboarding`, `interaction-discipline`) | Works for the chosen subset | Medium (partial surface) | Medium | Covers the Skills most likely to be read by international contributors in the research/design phase |
+| **A5. Translate by Skill priority (subset)** | 4–6 of 19 Skills (e.g., `writing-discipline`, `design-refinement`, `engineering-decisions`, `github-delivery`, `onboarding`, `interaction-discipline`) | Works for the chosen subset | Medium (partial surface) | Medium | Covers the Skills most likely to be read by international contributors in the research/design phase |
 
 Rows = candidate options. Columns = capability / cost / reproducibility / safety / latency / portability proxy as required by R-09 template. None of these options is "adopted" — they are candidates for the follow-up Issue(s) opened if translation begins.
 
@@ -111,7 +111,7 @@ All three parallel-file options (C1–C3) require an explicit convention in `CLA
 | --- | --- | --- |
 | Repository-internal docs in English (ADR-0002, `CLAUDE.md` §7) | Skills remain Japanese (deliberate exception) | Conflict between policy intent and current artifact language |
 | International contributors can onboard without Japanese | Skills unreadable without machine translation or bilingual reviewer | Partial blocker; particularly affects contributors reading `writing-discipline`, `interaction-discipline`, `design-refinement`, `onboarding` |
-| English-only Claude populations can discover Skills | 12/14 `description` fields are Japanese | Discovery skew — agents may not trigger Skills whose `description` they cannot parse |
+| English-only Claude populations can discover Skills | 17/19 `description` fields are Japanese | Discovery skew — agents may not trigger Skills whose `description` they cannot parse |
 | Skills remain byte-identical to pinned upstream ref | Satisfied today via verbatim copy | Translation in place would break this; parallel files preserve it |
 | Sync protocol against upstream pin upgrades (ADR-0001, `docs/rebuildup-pin.md`) | None defined for translation | Gap; needs to be defined before translation begins |
 
@@ -119,7 +119,7 @@ All three parallel-file options (C1–C3) require an explicit convention in `CLA
 
 These are **candidate recommendations**, expressed in the R-09 draft's required vocabulary. They are not "adopted" / "decided" / "planned specification".
 
-### Recommendation 1: Translate the `description` frontmatter field for all 14 Skills, regardless of body translation choice
+### Recommendation 1: Translate the `description` frontmatter field for all 19 Skills, regardless of body translation choice
 
 - This is the lowest-cost, highest-leverage candidate: a single sentence per Skill that is loaded into every Claude session.
 - Matches what the upstream `interaction-discipline` and `writing-discipline` already do.
@@ -151,7 +151,7 @@ These are **candidate recommendations**, expressed in the R-09 draft's required 
 
 If the project decides to begin translation, the following sub-Issues should be opened (per the R-09 acceptance criteria):
 
-1. **R-09a — Translate `description` frontmatter for all 14 Skills**: 12 strings to translate, no filename convention required.
+1. **R-09a — Translate `description` frontmatter for all 19 Skills**: 12 strings to translate, no filename convention required.
 2. **R-09b — Establish `SKILL.en.md` parallel-file convention (filename + linking rule)**: locks in C1 (or C2) before any body translation begins, to prevent filename divergence.
 3. **R-09c — Translate the priority subset of Skills** (full body): `writing-discipline`, `design-refinement`, `interaction-discipline`, `engineering-decisions`, `github-delivery`, `onboarding` are the candidate priority set based on likely international-reader surface during research/design phase.
 4. **R-09d — Define sync protocol against pin upgrades**: codify B4 (default) / B2 (fallback) as an addition to `docs/rebuildup-pin.md`.
@@ -164,9 +164,9 @@ If the project decides to begin translation, the following sub-Issues should be 
 - `CLAUDE.md` §7 — language policy, Skills exception
 - `docs/adr/ADR-0002-language-policy-override.md` — English-primary policy, Skills excepted, R-09 referenced
 - `docs/adr/ADR-0001-pin-rebuildup-policy.md` — pin model for upstream policy
-- `docs/rebuildup-pin.md` — pinned ref `release-0-1-1` SHA `48432a73...`, override table
+- `docs/rebuildup-pin.md` — pinned ref `release-0-3-0` SHA `48432a73...`, override table
 - `docs/research-issues/README.md` — R-09 draft (verbatim question above)
-- `.tmp/project-init/` — pinned upstream local clone, full source of the 14 Skills
+- `.tmp/project-init/` — pinned upstream local clone, full source of the 19 Skills
 
 ### Upstream and tooling
 
@@ -191,4 +191,4 @@ If the project decides to begin translation, the following sub-Issues should be 
 4. **Filename convention preference: `SKILL.en.md` (dot) vs `SKILL-en.md` (hyphen).** Both have external precedent; the choice should be made in R-09b (if Recommendation 2 is followed). u-sekai currently has no existing dot/hyphen convention that would force one over the other.
 5. **Whether `description` translations should also live in `SKILL.en.md` (so each file is self-contained) or in a separate `frontmatter.en.yaml` overlay.** The latter is more compact but adds a second source of frontmatter truth.
 6. **Verification of translation quality at PR time.** Machine-translation draft + human review is the candidate process, but the rubric for "translation is faithful to operational semantics" is not specified. This is a candidate future research question (downstream of R-09d) but is not strictly required for the R-09 decision itself.
-7. **Whether the frontmatter `description` language field should be standardized across all 14 Skills to use English even if the body remains Japanese.** Recommendation 1 implies yes, but this is a project-side override of upstream's pattern (where `description` matches body language) and should be recorded explicitly in an ADR or in `docs/rebuildup-pin.md`.
+7. **Whether the frontmatter `description` language field should be standardized across all 19 Skills to use English even if the body remains Japanese.** Recommendation 1 implies yes, but this is a project-side override of upstream's pattern (where `description` matches body language) and should be recorded explicitly in an ADR or in `docs/rebuildup-pin.md`.
