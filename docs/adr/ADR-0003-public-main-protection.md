@@ -6,7 +6,7 @@
 
 ## Context
 
-u-sekai is a **public** GitHub repository. The pinned upstream policy
+u-sekai is a **public** GitHub repository. The governance baseline
 ([`rebuildup/project-init@release-0-3-0`](https://github.com/rebuildup/project-init/tree/release-0-3-0))
 mandates that, in public repositories:
 
