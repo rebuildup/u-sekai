@@ -137,6 +137,25 @@ UI/UX、native platform、hardware integration等でautomationが十分でない
 
 manual verificationを暗黙の「見た感じOK」にしない。手順・期待結果・artifactを残す。
 
+### Verification Executor / native environment
+
+verificationはimplementation workerと同じworkspace topologyを必須にしない。ADR-0020に従い、検証対象をimmutable candidate identityへpinし、environment identityとevidence provenanceを記録する。
+
+最低限のevidence shape:
+
+```text
+candidate_identity
+environment_identity
+procedure_or_command
+observed_result
+evidence_artifacts
+source_mutation_observed
+```
+
+Windows-native、macOS-native、GUI application、physical device、installed build、CI runner等のsingleton environmentは、必要ならexclusive lease / serializationで安全に使用する。worktreeを作れないこと自体をverification skip理由にしない。
+
+unexpectedなtracked source/config mutationが確認されたvalidationは、current candidateのclean evidenceとして扱わずreconcile/re-runする。
+
 ## 3. 動作確認ゲートを変更riskから決める
 
 全ticketに全test levelを機械的に要求しない。
@@ -165,7 +184,7 @@ manual verificationを暗黙の「見た感じOK」にしない。手順・期�
 | external API adapter | unit + contract/integration + failure-path test |
 | build/package/container | build/package + smoke |
 | release branch | full applicable integration + critical E2E/smoke + release-specific checks |
-| security fix | regression test + vulnerable-path verification + applicable integration/E2E |
+| security fix | regression test + vulnerable-path verification + applicable integration/E2E + affected `security-audit` coverage revalidation when applicable |
 
 これはfixed universal matrixではない。framework official guidanceとproject architectureでcompileする。
 
@@ -188,9 +207,10 @@ profileには最低限:
 - stack reconciliation/revalidation policy
 - release gate
 - canonical validation entry points
-- required CI checks
+- configured CI checks when present
 - coverage policy when meaningful
 - browser/device/OS/architecture matrix
+- native/device/GUI verificationのcandidate materializationとenvironment ownership policy
 - CI trigger semantics (`pull_request` / `push` / schedule / dispatch / comment/review event)
 - runner policyとplatform matrixの起動条件
 - expensive/native/platform-specific gateの適用条件
@@ -215,6 +235,28 @@ validate:release
 実command名はproject conventionに合わせる。
 
 例外として、platform制約等で1つのlocal commandへ完全統合できない場合は、profileにその適用条件・runner/platform・required evidenceを明示し、agent/CIが別々の暗黙gateを選ばないようにする。
+
+## 4.1 Semantic validation evidence verification
+
+commit / PRのcombined statusが `success` であることだけをquality gate成功の証拠にしない。
+
+repository policy / quality profileは、release・ticket・runtime等の各candidateに対して **どのvalidationがapplicableか** をmachine-readableまたは一意に判定可能な形で持つ。validation identityはlocal deterministic commandでもCI job/checkでもよく、CIの存在や成功を全project共通の必須条件にはしない。
+
+CI/checkが存在する場合は最低限、次を確認する:
+
+- check context / job名がcandidate SHA上に実在する
+- checkが検証対象のcurrent SHA / current PR headを対象としている
+- known failureを無視していない
+- skipped / neutral / cancelled / unrelated bot successをapplicable validationの代替にしない
+- 同名checkでも別workflow / 別event semanticsなら誤同定しない
+- Draftのためreviewをskipしたbot status等をrelease validation成功として数えない
+- current SHAへ更新後、staleな以前のgreenを再利用しない
+
+**validation implementation exists** と **branch protection enforcement** は別invariantとして扱う。
+
+ADR-0016のdefault `main` protectionではfixed required status checksを設定しない。workflowやdeterministic gateが存在しても、それをrulesetのrequired statusへ自動登録しない。repositoryが明示的に安定したrequired status checkを採用する場合だけ、quality profileにそのidentityと適用範囲を記録する。
+
+release-source制約は架空のrequired checkで補わず、merge executor / release automationが `base == main` のとき `head == current release-*` を検証する。
 
 ## 5. 調査だけで終わらず実装する
 
@@ -260,6 +302,20 @@ frameworkが特定領域をE2E/real runtimeで検証することを推奨する�
 3. short project-local Skill wrapping deterministic tools
 4. native agent capability
 5. 明確な優位があるplugin/MCP
+
+## 7.1 Delivery-estimation integration
+
+`agent-delivery-estimation` がdelivery forecastを行う場合、quality gateは次の観測値を提供できる形にする。
+
+- validation level / required gate
+- CI started/completed duration
+- queue / retry / failure
+- E2E / manual verification wait
+- release-only validation cost
+- current-SHA revalidationによる追加round
+
+これらはforecast inputであり、estimateを短縮するためにrequired gateを削除・skip・弱体化してはならない。
+delivery forecastはquality requirementへ従い、逆にquality requirementをforecastへ合わせない。
 
 ## 8. GitHub Actions / CI resource efficiency
 
@@ -385,7 +441,7 @@ storage削減とActions minutes削減を混同しない。現在のbottleneckを
 
 - quota不足を理由にrequired verificationを無断削除する
 - native/platform testを単に消してgreenにする
-- required checkをdisableしてusage問題を隠す
+- required verificationをdisableしてusage問題を隠す
 - self-hosted runnerへ移せば安全性検討不要とみなす
 
 高コストverificationが必要なら、PR every-commitからrelease gate / change-sensitive gate / manual full gateへ移せないか評価する。
@@ -431,7 +487,7 @@ PR topologyは固定しない:
 - changed boundaryに必要なunit/smoke/integration/contract/E2E
 - formatter/lint/type/static/build等のapplicable checks
 - required CI checks
-- current head SHAとvalidation evidenceの一致
+- current head SHAまたはcurrent head SHA / snapshotにprovenanceで結び付いたimmutable artifact identityとvalidation evidenceの一致
 - immediate PR base / target release trunkとのstaleness確認
 
 「all unit tests green」だけをintegration completionにしない。
@@ -445,7 +501,7 @@ stack predecessorがreview/rebase/updateで変化した場合、affected downstr
 - previous `validated_sha` とcurrent head SHAを比較
 - SHAが変わったdownstream ticketではaffected required verificationを再実行
 - old green resultをcurrent headのpassとして流用しない
-- required CI/checksをcurrent headで再評価
+- configured CI/checksが存在する場合はcurrent headで再評価
 - predecessor contract/API/schema変更時はdependent contract/integration testを優先して再評価
 
 単なるbranch ref名ではなくresolved immutable SHAをvalidation identityにする。
@@ -471,7 +527,7 @@ stack predecessorがreview/rebase/updateで変化した場合、affected downstr
 
 - Issue acceptance criteriaを満たす
 - required verification levelを満たす
-- required CI/checksがcurrent SHAで成功
+- configured CI/checksが存在する場合はcurrent SHAで失敗を残していない
 - blocking review解消
 - known limitationを隠さない
 - target release trunk / immediate predecessorとのstaleness確認
@@ -518,92 +574,3 @@ coverageが適切でない領域では別のdeterministic signalへ置き換え�
 - release process変更
 
 quality gate自体をversioned project configurationとして扱う。
-
-## 17. Dependency / static-analysis goals
-
-dependency/static analysisは特定tool名を固定するのではなく、projectに該当する次のfailure modeを検出することを目的にする。
-
-- unused dependencies
-- missing / unlisted dependencies
-- duplicate or overlapping dependency responsibility
-- unused exports
-- unused files
-- unresolved references
-- stale configuration / dead entry points
-- generated/vendor boundaryの誤検出
-
-framework/runtime official tool、existing project tool、maintained ecosystem toolの順で適切な実装を選ぶ。JavaScript/TypeScriptでKnip等が適切なら利用できるが、全projectへ固定しない。
-
-broad ignoreや大量excludeを追加してgreenにするのではなく、原因を修正する。generated/vendor等の正当な例外はspecific / minimal / documentedにする。
-
-dependency addition/removal後はmanifestだけでなくlockfile、workspace graph、build/test/runtime resolutionまで整合を確認する。
-
-## 18. UI information architecture gate
-
-visible UIを変更するtaskでは、data model propertyをそのまま画面へ列挙することを設計とみなさない。
-
-実装前に最低限:
-
-1. data model
-2. use case
-3. user goal
-4. information priority
-5. interaction timing
-
-からinformation architectureを決める。
-
-確認する:
-
-- 何を常時visibleにするか
-- 何を必要時だけprogressive disclosureするか
-- どの情報/操作をgroup化するか
-- primary actionは何か
-- user flow上いつ情報が必要か
-- implicitでよい状態を説明UIで過剰に露出していないか
-
-情報構造を改善しないcard / wrapper / panel / border / visual chromeを増やさない。
-
-headless primitive / platform-native component / existing design systemが適切ならbehavior/accessibility primitiveとproject-specific presentationを分離する。
-
-## 19. Rendered UI verification
-
-visible UI changeはsource diffだけで合否判定しない。実際にrenderされたresultを確認する。
-
-project/platformに応じてbrowser/native automation、preview、screenshot、device/simulator等を使用し、必要な状態を明示的に確認する。
-
-代表例:
-
-- supported desktop/mobile viewport
-- loading
-- empty
-- error
-- success
-- disabled/hover/focus/selected等のinteraction state
-- overflow / clipping / scroll
-- visibility / z-order
-- text wrapping / localization-sensitive layout
-- console error
-- network failure
-- keyboard/accessibility interaction when relevant
-
-UI verification artifact、screenshot、trace、diagnostic outputは`.tmp/`へ置き、正式documentation/test fixtureへ昇格しない限りcommitしない。
-
-設計/acceptance criteriaを満たさないrendered resultが確認された場合、source上もっともらしいことを理由に完了せず実装loopへ戻る。
-
-## 20. Build / container / deliverable verification
-
-Containerfile、Compose、Kubernetes、Terraform、CloudFormation、Helm、package/signing等が変更surfaceに含まれる場合、projectに必要な最小validationをquality profileへcompileする。
-
-候補:
-
-- syntax/schema/native validator
-- lint
-- security/image/IaC scanner
-- build/package
-- generated plan/diff inspection
-- built image/artifact smoke test
-- deployment-like startup verification
-
-すべてのtoolを機械的に導入しないが、deliverableをbuildできるprojectでdefinition fileのtext checkだけを最終verificationにしない。
-
-scanner/linterをbroad ignoreで通すことはFalse green policyに従い禁止する。

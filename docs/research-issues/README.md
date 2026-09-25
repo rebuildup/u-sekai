@@ -150,18 +150,18 @@
 
 ### R-09: Translate upstream Skills into English (and the future language policy)
 
-- **Question**: Decide whether / how to translate the 14 Skills under `.claude/skills/` (currently Japanese, copied verbatim from the pinned `rebuildup/project-init@release-0-1-1` source) into English, and how to keep them in sync with future upstream revisions.
-- **Motivation**: u-sekai is internationally oriented (Product Hunt and similar channels). The rest of the repository's user-facing and internal docs are written in English; only the Skills remain in Japanese because translating them risks semantic drift relative to the pinned reference. A clear translation policy (and a sync protocol) is needed before international contributors engage.
+- **Question**: Decide whether / how to translate the 19 Skills under `.claude/skills/` (currently Japanese, installed verbatim from the current `rebuildup/project-init` source through `bunx skills`) into English, and how to keep them in sync with future upstream revisions.
+- **Motivation**: u-sekai is internationally oriented (Product Hunt and similar channels). The rest of the repository's user-facing and internal docs are written in English; only the Skills remain in Japanese because translating them risks semantic drift relative to the governance baseline. A clear translation policy (and a sync protocol) is needed before international contributors engage.
 - **Initial scope**:
   - Whether to translate the Skills (full / partial / by Skill)
   - Where to keep the translation (`.claude/skills/<name>/SKILL.md` itself vs. parallel `SKILL.en.md` vs. separate `skills-en/` directory)
-  - Reconciliation protocol when the pinned upstream source updates a Skill
+  - Reconciliation protocol when the governance baseline source updates a Skill
   - Translation process (manual PR / machine-translation with human review / coordinated upstream PR)
 - **Initial non-scope**: re-organizing or rewriting Skill content. Translation must preserve operational semantics.
 - **Dependencies**: none (independent of R-01 to R-08).
 - **Suggested investigation**:
   - Inventory which Skills are most likely to be read by international contributors in the current phase
-  - Compare `bunx skills add rebuildup/project-init` versus local copy from `.tmp/project-init/skills/` and assess which path better supports translation
+  - Compare `bunx skills add rebuildup/project-init` versus local copy from the current `rebuildup/project-init` source via `bunx skills` and assess which path better supports translation
   - Decide on a "drift budget": if upstream changes a translated Skill, do we re-translate immediately, queue, or accept temporary divergence?
 - **Acceptance criteria**:
   - Translation decision recorded (translate / not translate / partial)

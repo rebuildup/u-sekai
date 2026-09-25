@@ -13,6 +13,8 @@ agentは作業中に大量のtext contextを保持する。そこに存在する
 
 > **Think in context. Select for purpose. Compose for the reader. Reread without the context.**
 
+persistent reader-facing proseの作成・更新を開始する前にこのSkillをloadして適用する。raw context由来のdraftを先に作り、後から不要箇所をcleanupする順序にしない。routingが遅れて既にcontext serializationを含むdraftがある場合は、部分削除ではなくSelectから再構成する。
+
 ## 1. Scope
 
 このSkillは、少なくとも次のtextを新規作成・更新するときに適用する。
