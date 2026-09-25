@@ -1,25 +1,26 @@
-# rebuildup/project-init pin
+# rebuildup/project-init governance baseline
 
-This document records the **pinned source** of the [`rebuildup/project-init`](https://github.com/rebuildup/project-init) policy that this repository follows.
+This document records the **governance baseline** of [`rebuildup/project-init`](https://github.com/rebuildup/project-init) used to reconcile the project-local Constitution / Operating Model.
 
-Per the upstream rule, "explicit version pin / freeze" is what justifies referencing a fixed revision instead of auto-reconciling with upstream changes. This file is that pin.
+The baseline is intentionally separate from Agent Skills distribution. Constitution / Operating Model changes are reviewed as governance changes; Agent Skills continuously track the current `rebuildup/project-init` source through `bunx skills` unless a future ADR explicitly freezes a Skill.
 
-## Pinned source
+## Governance baseline
 
 | Field | Value |
 | --- | --- |
 | Repository | <https://github.com/rebuildup/project-init> |
 | Branch / ref | `release-0-3-0` |
-| Pinned commit SHA | `57fb4a2e5abe6f52e4fd9cb2cb88234496e47d4b` |
+| Baseline commit SHA | `57fb4a2e5abe6f52e4fd9cb2cb88234496e47d4b` |
 | Local clone | `.tmp/project-init/`(re-cloneable from the URL above) |
 | Gitignore status | `.tmp/` is gitignored |
 
-## Why pinned
+## Why the governance baseline is fixed
 
-- The upstream policy evolves on `main`. Without a pin, "presence of an installed skill" is not freshness evidence, and an autonomous "no change needed" decision is not allowed.
-- `release-0-3-0` is the current stable policy baseline adopted by u-sekai. Future upgrades require an explicit Issue/ADR-backed reconciliation rather than silent drift.
+- Constitution / Operating Model changes can alter organizational authority and therefore are not silently imported.
+- `release-0-3-0` is the stable governance baseline adopted by u-sekai.
+- Agent Skills are **not pinned by this baseline**. Presence is not freshness evidence; `skills-lock.json` plus `bunx skills update -p -y` is the continuous-update path.
 
-## Refresh / verify commands
+## Governance baseline refresh / verify
 
 Re-clone(overwrite the existing `.tmp/project-init/`):
 
@@ -53,13 +54,13 @@ The upstream policy at `release-0-3-0` specifies a language convention (internal
 | Commit messages | English | English (no change) |
 | Branch names | identifier / version only | identifier / version only (no change) |
 
-> **Note on the Skills exception**: u-sekai copies the Skills verbatim from the pinned upstream source to avoid semantic drift relative to the pinned reference. The Skills are the canonical policy contract; translating them risks divergence from the upstream reference, so translation is deferred to a follow-up research Issue (R-09 in [`docs/research-issues/README.md`](./research-issues/README.md)).
+> **Note on the Skills exception**: u-sekai keeps upstream-authored Skills verbatim in Japanese to avoid semantic drift. They are installed and updated from the current `rebuildup/project-init` source with `bunx skills`; the governance baseline above does not freeze them. Translation remains tracked in R-09.
 
 Other upstream rules (weekly sprint, `release-x-y-z` branches, `<issue-number>` ticket branches, GitHub Issue dependency graph as canonical dependency SoT, public-repository `main` protection, merge authorization separation from PR readiness, etc.) are followed as-is.
 
 Any future deviation from this override should be documented as a new ADR in `docs/adr/`.
 
-## When to upgrade the pin
+## When to upgrade the governance baseline
 
 Trigger an upgrade discussion when:
 
@@ -71,4 +72,4 @@ Process:
 
 1. Open a GitHub Issue describing the upstream change and the rationale.
 2. Decide whether to upgrade the pin or fork-and-customize a specific Skill.
-3. If upgrading: update this document, re-clone, reconcile `CLAUDE.md` / Skills, and commit via the normal PR workflow.
+3. If upgrading: update this document and reconcile the Constitution / Operating Model. Skills continue through their independent `bunx skills` lifecycle.
