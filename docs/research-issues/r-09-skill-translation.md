@@ -2,13 +2,13 @@
 
 ## Question (from draft)
 
-Decide whether / how to translate the 19 Skills under `.claude/skills/` (currently Japanese, copied verbatim from the pinned `rebuildup/project-init@release-0-3-0` source) into English, and how to keep them in sync with future upstream revisions.
+Decide whether / how to translate the 19 Skills under `.claude/skills/` (currently Japanese, installed verbatim from the current `rebuildup/project-init` source through `bunx skills`) into English, and how to keep them in sync with future upstream revisions.
 
 ## Investigation summary
 
 ### What was covered
 
-- **Project-side state**: confirmed the 19 Skills are identical copies from `.tmp/project-init/skills/`; the pin in `docs/rebuildup-pin.md` records `release-0-3-0` SHA `57fb4a2e5abe6f52e4fd9cb2cb88234496e47d4b`; ADR-0002 explicitly carves out the Skills as a deliberate exception to the English-only language policy; `CLAUDE.md` Section 7 restates the exception.
+- **Project-side state**: confirmed the 19 Skills are identical copies from the current `rebuildup/project-init` source via `bunx skills`; the governance baseline in `docs/rebuildup-pin.md` records `release-0-3-0`, while `skills-lock.json` records the current installed Skill content; ADR-0002 explicitly carves out the Skills as a deliberate exception to the English-only language policy; `CLAUDE.md` Section 7 restates the exception.
 - **Skill-by-skill description audit**: read the YAML frontmatter of all 19 installed Skills. 17/19 have a Japanese `description` field; 2/19 (`interaction-discipline`, `writing-discipline`) already have an English `description`. 0/14 have an English body.
 - **Upstream model**: confirmed upstream's own translation convention is `{name}.{lang}.md` (e.g., `PROMPT.ja.md` / `PROMPT.en.md`, `CODEX_ROLES.ja.md` / `CODEX_ROLES.en.md`). Upstream's Japanese is the primary specification; Skills themselves are not localized in upstream at `release-0-3-0`.
 - **Skills specification**: confirmed the public Skill format (`vercel-labs/skills`, Anthropic Skills best-practices) requires only `name` and `description` in YAML frontmatter, ships one `SKILL.md` per skill directory, and has no built-in i18n / locale mechanism. `npx skills add` / `bunx skills add` resolve a single canonical `SKILL.md`.
@@ -65,7 +65,7 @@ If the upstream has already changed two Skills to English descriptions while lea
 
 Per ADR-0001 (pin policy) and `docs/rebuildup-pin.md`:
 
-- "Skill content" is copied verbatim from the pinned ref to "avoid semantic drift relative to the pinned reference".
+- "Skill content" is copied verbatim from the pinned ref to "avoid semantic drift relative to the governance baseline".
 - Future upgrades require an explicit ADR and manual reconciliation.
 - "If the local clone's HEAD SHA differs from the pinned SHA … break the pin. Do not silently use the new SHA."
 
@@ -112,7 +112,7 @@ All three parallel-file options (C1–C3) require an explicit convention in `CLA
 | Repository-internal docs in English (ADR-0002, `CLAUDE.md` §7) | Skills remain Japanese (deliberate exception) | Conflict between policy intent and current artifact language |
 | International contributors can onboard without Japanese | Skills unreadable without machine translation or bilingual reviewer | Partial blocker; particularly affects contributors reading `writing-discipline`, `interaction-discipline`, `design-refinement`, `onboarding` |
 | English-only Claude populations can discover Skills | 17/19 `description` fields are Japanese | Discovery skew — agents may not trigger Skills whose `description` they cannot parse |
-| Skills remain byte-identical to pinned upstream ref | Satisfied today via verbatim copy | Translation in place would break this; parallel files preserve it |
+| Skills remain byte-identical to governance baseline ref | Satisfied today via verbatim copy | Translation in place would break this; parallel files preserve it |
 | Sync protocol against upstream pin upgrades (ADR-0001, `docs/rebuildup-pin.md`) | None defined for translation | Gap; needs to be defined before translation begins |
 
 ## Candidate set recommendations
@@ -166,7 +166,7 @@ If the project decides to begin translation, the following sub-Issues should be 
 - `docs/adr/ADR-0001-pin-rebuildup-policy.md` — pin model for upstream policy
 - `docs/rebuildup-pin.md` — pinned ref `release-0-3-0` SHA `48432a73...`, override table
 - `docs/research-issues/README.md` — R-09 draft (verbatim question above)
-- `.tmp/project-init/` — pinned upstream local clone, full source of the 19 Skills
+- `.tmp/project-init/` — governance baseline local clone, full source of the 19 Skills
 
 ### Upstream and tooling
 
@@ -192,3 +192,8 @@ If the project decides to begin translation, the following sub-Issues should be 
 5. **Whether `description` translations should also live in `SKILL.en.md` (so each file is self-contained) or in a separate `frontmatter.en.yaml` overlay.** The latter is more compact but adds a second source of frontmatter truth.
 6. **Verification of translation quality at PR time.** Machine-translation draft + human review is the candidate process, but the rubric for "translation is faithful to operational semantics" is not specified. This is a candidate future research question (downstream of R-09d) but is not strictly required for the R-09 decision itself.
 7. **Whether the frontmatter `description` language field should be standardized across all 19 Skills to use English even if the body remains Japanese.** Recommendation 1 implies yes, but this is a project-side override of upstream's pattern (where `description` matches body language) and should be recorded explicitly in an ADR or in `docs/rebuildup-pin.md`.
+
+
+## Continuous-update decision
+
+As of 2026-09-25, upstream-authored Skills are no longer frozen to the governance baseline. They remain Japanese verbatim, but installation/update is owned by `bunx skills` and `skills-lock.json`. Translation research must preserve that update path instead of introducing a manually maintained fork by default.
