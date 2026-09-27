@@ -2,7 +2,13 @@
  * Observer system prompt. The observer looks at the full trace and
  * surfaces findings; the prompt asks it to emit a JSON object matching
  * the ObserverFindings shape.
+ *
+ * The marker is imported from the structured-output boundary (ADR-0008)
+ * so the prompt and the contract selector cannot drift apart. The prompt
+ * is documentation for the model, not the enforcement mechanism.
  */
+
+import { OBSERVER_OUTPUT_MARKER } from '../reasoner/structured.js';
 
 export function observerSystemPrompt(): string {
   return [
@@ -12,7 +18,7 @@ export function observerSystemPrompt(): string {
     '- every termination event',
     '- the participant self-report',
     '',
-    'Produce an ObserverFindings JSON object with this shape:',
+    OBSERVER_OUTPUT_MARKER + ' with this shape:',
     '{',
     '  "summary": string,',
     '  "findings": [',
@@ -31,4 +37,4 @@ export function observerSystemPrompt(): string {
   ].join('\n');
 }
 
-export const OBSERVER_MARKER = 'Produce an ObserverFindings JSON object';
+export const OBSERVER_MARKER = OBSERVER_OUTPUT_MARKER;

@@ -49,6 +49,62 @@ export class AdapterError extends Error {
   }
 }
 
+/**
+ * Structured Reasoner output taxonomy (ADR-0008).
+ *
+ * `providerTransport`, `providerParse` and `contractValidation` are the
+ * three failure kinds a *provider* or *protocol* can produce. A genuine
+ * capability violation is NOT one of them: it is raised as
+ * `CapabilityViolation` and is deliberately not retryable.
+ */
+export type StructuredFailureKind =
+  | 'providerTransport'
+  | 'providerParse'
+  | 'contractValidation'
+  | 'capabilityViolation';
+
+export type StructuredOutputErrorKind = Exclude<StructuredFailureKind, 'capabilityViolation'>;
+
+export interface StructuredOutputFailureDetail {
+  /** Provider identity, e.g. `anthropic` or `scripted`. Never a secret. */
+  readonly provider?: string;
+  /** Provider model id, e.g. `claude-3-5-sonnet-latest`. */
+  readonly modelId?: string;
+  /** Which of the three structured outputs was expected. */
+  readonly outputKind?: 'action' | 'selfReport' | 'observerFindings';
+  /** 1-based attempt number within the recovery sequence. */
+  readonly attempt?: number;
+  /** Total attempts the recovery policy allowed. */
+  readonly maxAttempts?: number;
+  /** HTTP status when the failure came from a non-2xx response. */
+  readonly status?: number;
+  /** Capability axis, set only for a genuine `capabilityViolation`. */
+  readonly axis?: 'observation' | 'action' | 'memory';
+  /** `true` when the provider call exceeded the per-attempt deadline. */
+  readonly timeout?: boolean;
+  /** Short, redacted provider text kept for diagnostics. */
+  readonly excerpt?: string;
+}
+
+/**
+ * A provider returned something that is not a usable domain value.
+ *
+ * Thrown only at the structured-output boundary. Never reuse
+ * `CapabilityViolation` for a parse or contract failure: doing so turns a
+ * provider defect into a participant capability defect.
+ */
+export class StructuredOutputError extends Error {
+  readonly kind: 'structured_output_error' = 'structured_output_error' as const;
+  constructor(
+    message: string,
+    readonly failureKind: StructuredOutputErrorKind,
+    readonly detail: StructuredOutputFailureDetail = {},
+  ) {
+    super(message);
+    this.name = 'StructuredOutputError';
+  }
+}
+
 export interface DomainErrorShape {
   kind: string;
   message: string;
