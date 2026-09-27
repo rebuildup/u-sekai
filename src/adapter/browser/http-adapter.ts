@@ -18,6 +18,15 @@ import type { ActionResult } from '../../domain/action.js';
 import { AdapterError } from '../../domain/errors.js';
 
 interface InteractiveRegion {
+  /**
+   * Synthetic region id, NOT a CSS selector. This adapter parses HTML
+   * without a DOM, so it cannot resolve a real path; the value only
+   * exists so the HTTP adapter's region shape matches
+   * `ObserverObservation.interactiveRegions`. Real-browser adapters
+   * (`PlaywrightAdapter`) report a selector only after verifying that
+   * the live page resolves it back to the same element. The
+   * participant view never carries a selector either way.
+   */
   readonly selector: string;
   readonly label: string;
   readonly bbox: { x: number; y: number; width: number; height: number };
@@ -109,6 +118,11 @@ export function parseSimpleHtml(html: string): {
   const titleMatch = html.match(/<title[^>]*>([\s\S]*?)<\/title>/i);
   const title = (titleMatch?.[1] ?? '').trim();
   const body = htmlToVisibleText(html);
+  // Bounding boxes here are SYNTHETIC: an HTML string has no layout, so
+  // the parser assigns plausible rectangles by element order. They are
+  // enough to exercise the action allowlist and the capability filter,
+  // but they are not a claim about a rendered page. Only the Playwright
+  // adapter reports coordinates that were measured from a real viewport.
   const regions: InteractiveRegion[] = [];
 
   // Buttons.

@@ -46,6 +46,7 @@ adapters live under `src/reasoner/providers/` and translate domain
 `ReasonerRequest` -> provider-native JSON. CI uses
 `scriptedReasoner`, which is fully deterministic.
 
+<<<<<<< HEAD
 ## Structured Reasoner output (ADR-0008)
 
 `src/reasoner/structured.ts` is the only place a raw provider payload
@@ -88,15 +89,50 @@ Key rules:
   request body, or API key is ever persisted. Redaction is tuned so a
   message can still name the offending field.
 
-## Artifact layout (ADR-0007)
+## Two adapter paths (ADR-0009)
 
-See README "Output artifact" section.
+| | `HttpAdapter` | `PlaywrightAdapter` |
+| --- | --- | --- |
+| Page | fetched over HTTP, parsed as text | real Chromium page |
+| Screenshot | none | PNG per step |
+| Viewport / focus | synthetic constants | measured live viewport and `document.activeElement` |
+| Region `selector` | synthetic region id (documented as such) | a CSS path the page resolves back to the same element, else omitted |
+| Bounding boxes | synthetic, by element order | measured from the live layout |
+| Used by | `npm test`, `ci.yml` | `npm run test:browser`, `browser-smoke.yml` |
+
+Both produce the same privileged `ObserverObservation`, so the
+participant runtime cannot tell them apart; only the observer view
+differs. An action the page cannot perform is reported through
+`ActionResult.code` (`out_of_bounds`, `selector_not_found`, `timeout`,
+`unknown`) rather than as a silent success, and `observedAfter` is always
+re-read from the live page after the action settles.
+
+Browser tests live in `test/browser/**` under a separate Vitest profile
+(`test/vitest.browser.config.ts`) and are excluded from `npm test`, so the
+default suite stays fast and runnable with no browser installed. Install
+and CI requirements: [`docs/browser-runtime.md`](./browser-runtime.md).
+
+## Artifact layout (ADR-0007, ADR-0009)
+
+See README "Output artifact" section. Screenshots are real PNG files under
+`screenshots/<participantId>/step-NNN.png`; the observation JSON records
+`screenshot: { path, sha256, byteLength }` and never inlines the bytes.
+`visual.screenshotPng` is in-memory only and `visual.screenshotHash` is a
+real SHA-256 over the captured bytes, so the recorded hash and the file on
+disk must agree.
 
 ## Non-facts that we explicitly reject
 
 - A participant can never reach a privileged action shape
   (`selectorClick`, `evaluateJs`, `getDomTree`, ...) — the runtime
   refuses before any adapter call.
+- A participant view is a mechanical projection of the observer view, not
+  a filtered copy of it. `assertNoPrivilegedLeak` checks that every key
+  belongs to the participant schema and that every value equals its
+  projection, so a renamed field, a nested extra, or content taken from
+  the wrong source is a typed `capability.violation` rather than a leak.
+- A green check that did not run is not coverage. The browser gate fails
+  loudly when the browser runtime is missing instead of skipping.
 - Synthetic Users are not real users. The current observation layer is
   not a substitute for usability testing with human participants.
 - We do not silently fold three signals (participant / observer /
