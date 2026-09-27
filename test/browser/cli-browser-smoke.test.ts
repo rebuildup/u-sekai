@@ -27,6 +27,7 @@ import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { assertBrowserRuntimeAvailable } from './support/browser-runtime.js';
 import { startDemoServer, withIndependentPage, type ServerHandle } from './support/demo.js';
+import { loadExperiment } from '../../src/experiment/loader.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(here, '..', '..');
@@ -86,13 +87,19 @@ describe('CLI browser smoke', () => {
       observer: { capturedAt: string };
       evidence: { runtimeErrors: unknown[] };
     };
-    // The gate: every participant really finished. A browser that failed
-    // to reach the page would show `error` here.
+    // The gate: exactly the fixture's participants ran, and every one of
+    // them really finished. A browser that failed to reach the page would
+    // show `error` here, and a dropped or extra participant would change
+    // the id set.
+    const fixtureDef = await loadExperiment(fixture);
+    const expectedIds = fixtureDef.participants.map((p) => p.id).sort();
+    expect(Object.keys(result.terminationReasons).sort()).toEqual(expectedIds);
     for (const [id, reason] of Object.entries(result.terminationReasons)) {
       expect(reason, `participant ${id} ended as ${reason}`).toBe('finish');
     }
     expect(result.evidence.runtimeErrors).toEqual([]);
     expect(result.observer.capturedAt).not.toBe('');
+    expect(result.participants.map((p) => p.participantId).sort()).toEqual(expectedIds);
     for (const p of result.participants) {
       expect(p.selfReport.participantId).toBe(p.participantId);
     }

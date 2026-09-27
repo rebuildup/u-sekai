@@ -25,7 +25,7 @@
  *   rethrown or attached to the diagnostic that is being raised.
  */
 
-import { chromium, type Browser, type BrowserContext, type Page } from 'playwright';
+import { chromium, type Browser, type BrowserContext, type Page, type Request } from 'playwright';
 import type { BrowserAdapter } from './interface.js';
 import type {
   ObserverObservation,
@@ -406,8 +406,13 @@ export class PlaywrightAdapter implements BrowserAdapter {
     // that triggers a document swap would otherwise settle on the
     // outgoing document and report a stale url/title.
     const navigation = this.waitForMainFrameNavigation();
+    // A navigation can also fail *before* it commits (DNS error, reset
+    // connection). Nothing then swaps the document, so the load state of
+    // the old page would look like a success. Watch for it explicitly.
+    const navigationFailures = this.watchMainFrameNavigationFailures(page);
     await page.mouse.click(action.x, action.y);
     const settled = await this.settleAfterAction(navigation, 'click');
+    const failures = navigationFailures.stop();
     if (!settled.ok) {
       const observed = await this.readCurrentPage(page);
       return this.record(now, action.kind, {
@@ -417,12 +422,47 @@ export class PlaywrightAdapter implements BrowserAdapter {
       });
     }
     const observed = await this.readCurrentPage(page);
+    if (failures.length > 0) {
+      // The click asked the page to navigate and that navigation never
+      // delivered a document. Chromium usually commits an error page
+      // (`chrome-error://...`) in that case, so the URL does change -
+      // reporting `ok` here would be a false success in the evidence.
+      return this.record(now, action.kind, {
+        status: 'error',
+        note: `click at (${action.x}, ${action.y}) on <${hit.tag}> started a navigation that failed before it committed: ${failures.join('; ')}. The page is now at ${observed.url}.`,
+        code: 'timeout',
+      });
+    }
     const navigated = observed.url !== before.url ? `; navigated to ${observed.url}` : '';
     return this.record(now, action.kind, {
       status: 'ok',
       observedAfter: observed,
       note: `clicked <${hit.tag}${hit.label ? ` "${hit.label}"` : ''}> at (${action.x}, ${action.y})${navigated}`,
     });
+  }
+
+  /**
+   * Records main-frame navigation requests that failed before commit.
+   * A client-side cancellation (`net::ERR_ABORTED`) is not a delivery
+   * failure and is ignored. Returns a `stop()` that detaches the
+   * listener and yields what was collected.
+   */
+  private watchMainFrameNavigationFailures(page: Page): { stop: () => string[] } {
+    const failures: string[] = [];
+    const onFailure = (request: Request): void => {
+      if (!request.isNavigationRequest()) return;
+      if (request.frame() !== page.mainFrame()) return;
+      const errorText = request.failure()?.errorText ?? 'unknown error';
+      if (errorText.includes('ERR_ABORTED')) return;
+      failures.push(`${request.method()} ${request.url()} failed: ${errorText}`);
+    };
+    page.on('requestfailed', onFailure);
+    return {
+      stop: () => {
+        page.off('requestfailed', onFailure);
+        return failures;
+      },
+    };
   }
 
   private async executeTypeText(page: Page, text: string, now: string): Promise<ActionResult> {
@@ -434,19 +474,24 @@ export class PlaywrightAdapter implements BrowserAdapter {
         code: 'selector_not_found',
       });
     }
-    await page.keyboard.type(text, { delay: 0 });
-    const after = await page.evaluate(() => {
-      const el = document.activeElement;
-      if (!el) return { length: -1, tag: 'none' };
-      const value = 'value' in el && typeof (el as HTMLInputElement).value === 'string'
-        ? (el as HTMLInputElement).value
-        : (el.textContent ?? '');
-      return { length: value.length, tag: el.tagName.toLowerCase() };
-    });
-    if (after.length !== text.length) {
+    // Measure the field before typing. Comparing the final length to
+    // `text.length` would misreport a field that already held a value
+    // (or one that transforms input): what matters is that the typing
+    // produced exactly the characters we sent.
+    const before = await this.readFocusedValueLength(page);
+    if (before === null) {
       return this.record(now, 'typeText', {
         status: 'error',
-        note: `typed ${text.length} chars but <${after.tag}> reports ${after.length} after typing; the page may have swallowed the input`,
+        note: 'typeText lost its editable target between the focus check and typing; nothing was typed.',
+        code: 'selector_not_found',
+      });
+    }
+    await page.keyboard.type(text, { delay: 0 });
+    const after = await this.readFocusedValueLength(page);
+    if (after === null || after.length !== before.length + text.length) {
+      return this.record(now, 'typeText', {
+        status: 'error',
+        note: `typed ${text.length} chars into a field holding ${before.length} but it now reports ${after?.length ?? 'no element'}; the page may have swallowed or rewritten the input`,
         code: 'unknown',
       });
     }
@@ -455,6 +500,18 @@ export class PlaywrightAdapter implements BrowserAdapter {
       status: 'ok',
       observedAfter: observed,
       note: `typed ${text.length} chars into <${after.tag}>`,
+    });
+  }
+
+  /** Length of the focused element's text, or `null` if focus is gone. */
+  private async readFocusedValueLength(page: Page): Promise<{ length: number; tag: string } | null> {
+    return page.evaluate(() => {
+      const el = document.activeElement;
+      if (!el) return null;
+      const value = 'value' in el && typeof (el as HTMLInputElement).value === 'string'
+        ? (el as HTMLInputElement).value
+        : (el.textContent ?? '');
+      return { length: value.length, tag: el.tagName.toLowerCase() };
     });
   }
 

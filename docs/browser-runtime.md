@@ -146,7 +146,7 @@ The manual workflow fails loudly when the key is missing; it never skips.
 
 ## Reading the artifacts
 
-Layout is [`ADR-0007`](../adr/ADR-0007-run-artifact-structure.md):
+Layout is [`ADR-0007`](./adr/ADR-0007-run-artifact-structure.md):
 
 ```text
 runs/<runId>/

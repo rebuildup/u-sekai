@@ -97,6 +97,11 @@ describe('PlaywrightAdapter (real Chromium)', () => {
     // Independent round-trip: a browser page that never saw the adapter
     // must resolve each reported selector to exactly one element whose
     // visible identity matches the reported label.
+    //
+    // Only regions that actually reported a selector take part: an
+    // omitted selector is the adapter's documented, correct behaviour,
+    // and `querySelectorAll('')` would throw.
+    const reported = regions.flatMap((r) => (r.selector ? [{ selector: r.selector, label: r.label }] : []));
     const mismatches = await withIndependentPage(server.baseUrl, async (page) =>
       page.evaluate((selectors) => selectors.map(({ selector, label }) => {
         const found = document.querySelectorAll(selector);
@@ -110,7 +115,7 @@ describe('PlaywrightAdapter (real Chromium)', () => {
           el.getAttribute('type') ?? '',
         ].join(' ').replace(/\s+/g, ' ').trim();
         return { selector, label, resolved: identity.includes(label) ? 'ok' : `identity "${identity}" does not contain "${label}"` };
-      }), regions.map((r) => ({ selector: r.selector ?? '', label: r.label }))),
+      }), reported),
     );
     expect(mismatches.filter((m) => m.resolved !== 'ok')).toEqual([]);
   });

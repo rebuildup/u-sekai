@@ -209,6 +209,35 @@ describe('browser failure diagnostics', () => {
     // CLI level above.
   }, 180_000);
 
+  it('reports a navigation that fails before commit instead of a false success', async () => {
+    // Chromium commits `chrome-error://chromewebdata/` when a navigation
+    // cannot be delivered, so the URL *does* change. Reporting `ok` there
+    // would put a false success in the run artifact.
+    const own = await startDemoServer();
+    const adapter = new PlaywrightAdapter();
+    try {
+      await adapter.open(own.baseUrl);
+      const obs = await adapter.observe(0);
+      const settings = obs.interactiveRegions.find((r) => r.label === 'Settings');
+      expect(settings).toBeDefined();
+      // Take the target away, then click the link that needs it.
+      await own.close();
+
+      const result = await adapter.execute({
+        kind: 'clickByCoords',
+        x: Math.round((settings?.bbox.x ?? 0) + (settings?.bbox.width ?? 0) / 2),
+        y: Math.round((settings?.bbox.y ?? 0) + (settings?.bbox.height ?? 0) / 2),
+      });
+      expect(result.status).toBe('error');
+      if (result.status !== 'error') return;
+      expect(result.code).toBe('timeout');
+      expect(result.note).toContain('failed before it committed');
+      expect(result.note).toMatch(/ERR_CONNECTION_REFUSED|ERR_/);
+    } finally {
+      await adapter.close();
+    }
+  }, 120_000);
+
   it('leaves the demo environment untouched by the failed runs', async () => {
     const html = await (await fetch(`${server.baseUrl}/`)).text();
     expect(html).toContain('No tasks yet.');

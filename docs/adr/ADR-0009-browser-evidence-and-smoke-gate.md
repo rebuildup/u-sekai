@@ -216,7 +216,7 @@ Operational:
 
 ## References
 
-- [Issue #25](../../.github/../issues/25)
+- [Issue #25](https://github.com/rebuildup/u-sekai/issues/25)
 - [`ADR-0006`](./ADR-0006-capability-model-observation-action-memory.md)
 - [`ADR-0007`](./ADR-0007-run-artifact-structure.md)
 - [`docs/browser-runtime.md`](../browser-runtime.md)
