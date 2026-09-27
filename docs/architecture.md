@@ -78,21 +78,32 @@ and never requires a direct source change to `main`.
 
 - `package.json#version` at the released commit is the only version input.
   The tag (`v<V>`) and the release branch (`release-<x>-<y>-<z>`) are derived
-  from it; there is no command-line version override.
+  from it; there is no command-line version override, and the ref the version
+  is read from must resolve to the commit being tagged.
 - The expected release commit is resolved from the `main` merge record for
-  the release branch. A deleted release branch is accepted because that merge
-  record is the durable evidence; a surviving release branch must be an
-  ancestor of the target.
+  the release branch, anchored to the GitHub merge-commit subject shape. A
+  deleted release branch is accepted because that merge record is the durable
+  evidence; a surviving release branch must be an ancestor of the target; and
+  more than one qualifying merge is a refusal rather than a newest-wins pick.
 - The rules are **fail, never correct**: each check prints the expected value
   next to the observed one and a violation never adjusts a version, a tag, a
-  target commit, or a required check.
+  target commit, or a required check. An answer the tool could not read — an
+  unreadable check-run list, an unreadable duplicate inventory — is a refusal,
+  never an assumed pass.
 - The release gate is decided from check runs on the target commit, scoped to
   `main` and `release-<V>`, taking the latest run of each required check. A
-  missing, unreadable, or empty gate is a refusal, never a pass.
+  missing, unreadable, or empty gate is a refusal, never a pass. The gate list
+  is a committed constant that a test checks against the real `ci.yml` job
+  names.
+- Branch protection is read as a **local-only** cross-check
+  (`--cross-check-protection`). The publish workflow's token cannot read it, so
+  in CI the committed gate is the only definition of the gate and the run says
+  so rather than claiming branch protection registers nothing.
 - The CLI is plan-only by default and mutates nothing until `--apply`. The
-  `release-publish` workflow is `workflow_dispatch`-only with `dry_run`
-  defaulting to true, and it is idempotent: an existing tag and Release at
-  the target commit yield `already-published` and no new artifact.
+  `release-publish` workflow is `workflow_dispatch`-only, reads its `dry_run`
+  switch fail-closed (only the literal `false` publishes), and is idempotent:
+  an existing tag and Release at the target commit yield `already-published`
+  and no new artifact.
 
 Procedure: [`docs/release-process.md`](./release-process.md).
 

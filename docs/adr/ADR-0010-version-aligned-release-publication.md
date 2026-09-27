@@ -39,6 +39,14 @@ version input. The CLI has no flag that sets the version, on purpose: a
 command-line override would let a tag be published whose version differs from
 `package.json#version`, which is exactly the condition the gate must refuse.
 
+`--source-ref` is kept as the explicit spelling of "where to read the version",
+and the `version-source-sha` rule requires it to resolve to the target release
+commit. Mixing facts from two commits — reading the version from one commit and
+tagging another — would make every version comparison meaningless, so a
+`--source-ref` that resolves elsewhere is a refusal. Dropping the option instead
+was the alternative; the rule was chosen because it keeps the fact explicit and
+names both commits in the refusal.
+
 `scripts/check-version-sync.mjs` remains the pre-merge check for the same
 field, and it additionally enforces that a `release-` ref matches the
 version. The two are siblings over one value, not a second rule.
@@ -67,6 +75,19 @@ as the durable evidence; branch existence is the alternative evidence path,
 not the only one. A `release-<V>` branch that still exists must additionally
 be an ancestor of the target, so a branch that moved past the tagged state is
 refused.
+
+A candidate must match the GitHub merge-commit **subject shape**, and the last
+path segment of the head branch must equal the release branch. Anchoring the
+shape is what makes the subject evidence rather than a mention: `docs: document
+the release-0-2-0 rollback plan` and `Merge branch tmp; revert release-0-2-0`
+resolve no release commit at all.
+
+More than one qualifying merge is a **refusal**, not a "newest wins" pick. A
+head branch can end with the release branch's name without being the release
+branch — `docs/release-0-2-0` merged after `release-0-2-0` does — and a subject
+alone cannot tell a re-merge from a different branch. Choosing the newest of
+two commits that both claim to be the release of `V` is a guess about what a
+public tag would point at, so the run refuses and names every candidate.
 
 ### Fail, never correct
 
@@ -101,20 +122,56 @@ list. It is a `pull_request`-time check on the release pull request head, so
 it produces no check run on the release merge commit; it is enforced by branch
 protection at merge time and is classified as a merge-time check.
 
+The constant must name checks the `CI` workflow actually defines.
+`test/unit/release-verification.test.ts` parses the `jobs:` block of
+`.github/workflows/ci.yml` (and of `release-source-check.yml` for the
+merge-time contexts) and fails when a committed name is not an actual job
+name, so renaming a CI job cannot leave a green gate that can never be
+satisfied.
+
+### Branch protection as a local-only cross-check
+
 Branch protection on `main` is read as a cross-check, not as the gate source.
 A registered required check that neither covers the release gate nor is a
 merge-time pull request check means the gate is narrower than the
 repository's own definition, and is a refusal.
 
-When branch protection registers no required status check at all, that is
-reported as a `protection-sync` note rather than a silent pass, and
-`--require-protection-configured` escalates the note to a refusal.
+**The cross-check is local-only and is not performed by the release-publish
+workflow.** `GET /repos/{owner}/{repo}/branches/{ref}/protection` requires
+Administration: read, and the workflow's `GITHUB_TOKEN` is granted only
+`contents: write` and `checks: read`, so the read cannot succeed from CI. The
+workflow therefore has no `require_protection_configured` input: from that
+context the request could never be satisfied, and an input that can only ever
+refuse is not an input.
+
+Consequences, all of them fail-closed:
+
+- The committed `DEFAULT_REQUIRED_RELEASE_CHECKS` is the **only** definition of
+  the gate in CI. The run says so explicitly (`protection-sync` note:
+  "the branch-protection cross-check was not performed").
+- An unanswered read is never reported as a fact. A 404 that does not name the
+  missing section, a 403, or a transport failure is reported as *unreadable*,
+  and only a response that names the absent section ("Required status checks not
+  enabled") is reported as "none registered".
+- Locally, `node scripts/verify-release.mjs --cross-check-protection` performs
+  the cross-check with an operator credential that can read it.
+- `--require-protection-configured` escalates the outcome to a refusal, and
+  without `--cross-check-protection` it is itself refused: the request is
+  undecidable, and an undecidable request is never reported as a satisfied one.
+
 
 ### Trigger
 
 Publication is a `workflow_dispatch`-only workflow
 (`.github/workflows/release-publish.yml`) whose `dry_run` input defaults to
 `true`.
+
+The switch is read **fail-closed**: only the exact string `false` adds
+`--apply`, and an unset, empty, or unexpectedly spelled value
+(`0`, `1`, `yes`, `TRUE`) stays a dry run. The workflow form coerces booleans,
+but `gh workflow run -f dry_run=<value>` and the REST dispatch endpoint accept
+arbitrary strings, and a publish switch that fails open turns a typo into a
+public tag.
 
 `release: published` is rejected because it would make the GitHub Release
 the source of the release, contradicting `package.json#version` as the source
@@ -140,12 +197,21 @@ rather than as an obstacle:
   it would be a correction.
 - A different GitHub Release already carrying the same version (for example
   `0.2.0` next to `v0.2.0`) → refusal, so a second artifact for one version
-  cannot appear.
+  cannot appear. The same applies to a stray **git tag** for the same version:
+  Releases are listed with pagination and tags are scanned too, so an
+  inventory that could not be read completely is a refusal rather than an
+  assumed absence. Answering "is there a duplicate?" with "no" after failing
+  to read the list would be the fail-open direction for a question about what
+  already exists publicly.
 - After any `--apply`, the tag and the Release are re-read and the run fails
   if the result is not the intended one.
 - Each artifact is re-read immediately before it is created, so two concurrent
   publishing runs converge on one tag and one Release instead of racing into a
   second artifact.
+- A partially completed `--apply` is recoverable by re-running. The failure
+  message names whether the tag now exists, states that the script never
+  deletes, moves, or re-points a tag and never deletes a Release, and says that
+  re-running creates only the missing Release.
 
 ### Release notes
 
@@ -164,6 +230,8 @@ Positive:
   refusal names both values.
 - The gate cannot pass by absence: an absent, unreadable, or empty check is a
   refusal.
+- The gate cannot pass by ambiguity: more than one merge commit claiming to be
+  the release of `V` is a refusal, not a newest-wins pick.
 - Backfill and future releases use the same code path.
 
 Negative / trade-offs:
@@ -171,20 +239,40 @@ Negative / trade-offs:
 - The rules depend on GitHub merge-commit subjects, so the repository must
   keep merge-commit landing. This is already a fixed decision in ADR-0003 and
   in the operating profile.
-- A re-merged release branch resolves to its newest merge, which is reported
-  as a note rather than a refusal.
+- A release branch that was merged twice, or a different branch whose name ends
+  with the release branch's name, refuses publication. Resolving it is a
+  human decision (re-land, or rename), and the refusal lists the candidates.
+- The workflow cannot cross-check branch protection, so the committed release
+  gate is the only definition of the gate in CI. The cross-check is available
+  locally and is expected before a real publish.
 - Publishing a public tag is effectively irreversible; the gate does not
-  attempt to un-publish.
+  attempt to un-publish. **Tag immutability is a convention here, not an
+  enforced property**: the tag created is lightweight and GitHub tag protection
+  is not enabled, so nothing prevents a human from moving or deleting it. The
+  gate's response to a moved tag is a loud refusal (`tag-idempotency`), never
+  a silent re-point.
 
 Operational:
 
 - `scripts/release-rules.mjs` is pure; `test/unit/release-verification.test.ts`
   covers every rule, including the negative cases.
+- The CLI's own fact-gathering and argument handling (`parseArgs`,
+  `parsePackageVersion`, `isNotFound`, `mapCheckRuns`, `protectionContextsFrom`,
+  `resolveCommitish`, `scanConflictingReleaseArtifacts`, `assertPublished`) are
+  unit tested in the same file, because the anti-false-green arguments rest on
+  their internal tri-state decisions.
+- `scripts/**` is type-checked by `tsconfig.json` with `allowJs` /
+  `checkJs`, and the types of the rules module are derived from JSDoc in the
+  implementation. There is no hand-written declaration file beside it: a
+  parallel `.d.mts` can drift from the `.mjs` silently, which would widen the
+  gate while every test stayed green.
 - The CLI reads `gh` from the environment; no credential is stored in the
   repository.
 - If the `CI` job name changes, `DEFAULT_REQUIRED_RELEASE_CHECKS` must change
   with it, and the same for `PR_TIME_CHECK_CONTEXTS` when the
-  `release-source-check` workflow is renamed.
+  `release-source-check` workflow is renamed. Both are enforced by a test that
+  parses the workflow files, so the change fails CI rather than waiting for a
+  release.
 
 ## Alternatives considered
 
@@ -193,8 +281,13 @@ Operational:
 - **Automatic version bump and tag on merge to `main`**: rejected — out of
   scope for this issue, and it would auto-correct a version mismatch instead
   of surfacing it.
-- **Signed annotated tags**: deferred. The current tag is lightweight; a
-  signing requirement is a separate decision.
+- **Reading branch protection from the workflow**: rejected — the token cannot
+  read it, and treating the failed read as "nothing is required" would let the
+  cross-check pass by being unable to run. Granting Administration: read to a
+  publishing token was also rejected, as a publish job does not need it.
+- **Signed annotated tags and GitHub tag protection**: deferred. The current
+  tag is lightweight and unprotected, so immutability is a convention rather
+  than an enforced property; enforcing it is a separate decision.
 - **npm registry publication**: out of scope; `package.json` is `private`.
 
 ## References

@@ -95,41 +95,65 @@ re-reads both artifacts afterwards and fails if the result is not what was
 intended. If either artifact already exists correctly, the run is a no-op
 (`already-published`) and nothing is duplicated.
 
+If a publishing run stops after the tag was created, the failure message names
+that state and says the script never deletes, moves, or re-points a tag and
+never deletes a Release. Re-running the same command re-reads both artifacts and
+creates only the missing Release.
+
 ### Backfilling an already-merged release
 
-The 0.1.0 release was merged to `main` before this process existed, so it
-has no tag and no Release. Backfill it with the same command and an explicit
-target:
+The 0.1.0 release was merged to `main` before this process existed, so it had no
+tag and no Release. Its tag and Release were backfilled afterwards with the same
+command and an explicit target:
 
 ```bash
 npm run release:verify -- --sha 34b9cc6
 npm run release:publish -- --sha 34b9cc6
 ```
 
-The dry run must print verdict `publish` before the publishing run. The
-`release-0-1-0` branch no longer exists; the merge record on `main` is the
-durable evidence that the release happened, and the verifier accepts that
-path explicitly.
+The dry run must print verdict `publish` (`already-published` once both
+artifacts exist) before the publishing run. The `release-0-1-0` branch no longer
+exists; the merge record on `main` is the durable evidence that the release
+happened, and the verifier accepts that path explicitly.
 
 ## 6. What is checked
 
 | Rule | Refuses when |
 | --- | --- |
 | `version-source-format` | `package.json#version` at the target commit is not stable semver `x.y.z` |
+| `version-source-sha` | the version was read from a ref that does not resolve to the target commit |
 | `tag-format` | the tag is not exactly `v<major>.<minor>.<patch>` |
 | `tag-version-match` | the tag version differs from `package.json#version` |
 | `release-branch-name` | the intended release branch is not `release-<x>-<y>-<z>` for that version |
 | `expected-release-sha` | `main` has no merge commit recording the integration of that release branch |
+| `expected-release-sha-ambiguous` | more than one merge commit on `main` integrates that release branch |
 | `target-release-sha` | the target commit is not that release commit |
 | `target-sha-on-remote` | no ref advertised by the remote contains the target commit |
 | `target-sha-on-main` | the target commit is not reachable from the default branch |
 | `release-branch-evidence` | the release branch neither exists nor is recorded as merged into `main` |
 | `release-branch-ancestor` | a surviving release branch moved past the tagged state |
 | `release-gate` | a required check is missing, unreadable, still running, or not `success` |
-| `protection-sync` | branch protection requires a check the release gate does not cover |
+| `protection-sync` | branch protection requires a check the release gate does not cover (local cross-check only) |
 | `tag-idempotency` | the tag already exists at a different commit |
 | `release-idempotency` | an existing Release is a draft, a pre-release, or points elsewhere |
-| `no-duplicate-release-artifacts` | another Release already carries the same version |
+| `no-duplicate-release-artifacts` | another tag or Release already carries the same version, or the inventory could not be read |
+
+### Branch protection is a local-only cross-check
+
+`GITHUB_TOKEN` is granted `contents: write` and `checks: read` and cannot read
+branch protection, so the `release-publish` workflow does **not** perform the
+cross-check and has no `require_protection_configured` input. In CI the
+committed `DEFAULT_REQUIRED_RELEASE_CHECKS` is the only definition of the gate,
+and the run says so explicitly. Perform the cross-check locally before a real
+publish:
+
+```bash
+npm run release:verify -- --cross-check-protection
+```
+
+An unanswered read is reported as *unreadable*, never as "branch protection
+registers no required status check". Only a response that names the absent
+section is reported as "none registered".
 
 ## 7. Failure messages
 
@@ -144,7 +168,9 @@ that nothing was created, moved, or deleted.
 | `[tag-version-match]` | the tag version is not `package.json#version` | fix the version on the release branch (Section 1) or drop `--tag`. There is no version override; the script refuses rather than correcting |
 | `[release-branch-name]` | the release branch does not match the version | rename nothing; correct `package.json#version` |
 | `[expected-release-sha]` | `main` records no merge of the release branch for that version | the release was never merged, or it was squash-merged. Squash landing breaks this gate by design |
+| `[expected-release-sha-ambiguous]` | more than one merge commit integrates that release branch, so the released state is ambiguous | the refusal lists the candidate commits. Usually a second branch whose name ends with the release branch name (for example `docs/release-0-2-0`). Rename that branch or re-land; the script will not pick one |
 | `[target-release-sha]` | the target is not the release commit | point `--sha` at the `release-x-y-z -> main` merge commit, or let it default to the head of `main` |
+| `[version-source-sha]` | `--source-ref` resolves to a different commit than `--sha` | drop `--source-ref`; the version is read at the tagged commit |
 | `[target-sha-on-main]` | the target is not on the default branch | the release PR is not merged yet |
 | `[target-sha-on-remote]` | no advertised remote ref contains the target | `git fetch origin`, or the commit was never pushed |
 | `[release-branch-evidence]` | branch absent and no merge record | the version was never released; the version on `main` is ahead of reality |
@@ -153,24 +179,34 @@ that nothing was created, moved, or deleted.
 | `[release-gate] ... completed/failure` | the latest run of the required check failed | fix CI. The latest run wins, exactly as GitHub decides a required status check |
 | `ignored N check run(s) ...` (note) | runs on that commit came from a branch other than `main` or `release-<V>` | informational; those runs are out of scope for this release |
 | `[protection-sync] ... not covered` | branch protection requires a check the release gate ignores | add the check to `DEFAULT_REQUIRED_RELEASE_CHECKS` / `RELEASE_REQUIRED_CHECKS` |
-| `branch protection ... registers no required status check` (note) | ADR-0003 expects a required status check on `main` but none is registered | repository settings, not source. Re-run with `--require-protection-configured` to make this a refusal |
+| `the branch-protection cross-check was not performed` (note) | the run had no `--cross-check-protection`, which is the CI default | informational in CI. Re-run locally with `--cross-check-protection` before publishing |
+| `branch protection ... registers no required status check` (note) | a performed cross-check found no required check on `main` | repository settings, not source. Re-run with `--require-protection-configured` to make this a refusal |
 | `[tag-idempotency]` | the tag exists at another commit | a public tag is immutable. Investigate before deleting anything |
 | `[release-idempotency]` | the existing Release is a draft, a pre-release, or points elsewhere | publish the draft, or delete it deliberately — the script will not |
-| `[no-duplicate-release-artifacts]` | another Release already carries this version | remove the stale Release deliberately, then re-run |
+| `[no-duplicate-release-artifacts]` | another tag or Release already carries this version, or the inventory could not be listed | remove the stale artifact deliberately, then re-run. An unreadable inventory is a refusal, not a pass |
+| `release-verify: publication did not complete` (exit 2) | `--apply` created the tag and then failed | the message names whether the tag now exists. The script never deletes, moves, or re-points a tag and never deletes a Release, so re-run the same command: it re-reads both artifacts and creates only the missing Release |
 | `release-verify: ... could not be gathered` (exit 2) | `gh` is unauthenticated, or an API call failed | set `GH_TOKEN` / `gh auth login`, or re-run with `--no-fetch` if the network fetch failed |
+
+Exit code 2 always means "the facts could not be gathered", including a
+`package.json` that is not valid JSON. Exit code 1 always means "a rule was
+violated", and it is never reached by a stack trace.
 
 ## 8. Options
 
 ```
 --sha <ref>                       target release commit (default: head of origin/main)
---source-ref <ref>                ref to read package.json#version from (default: --sha)
+--source-ref <ref>                ref to read package.json#version from (default: --sha;
+                                  must resolve to --sha)
 --tag <name>                      tag to publish (default: v<version>)
 --release-branch <name>           intended release branch (default: derived)
 --main-ref <ref>                  ref holding the released source state (default: main)
 --remote <name>                   git remote (default: origin)
 --repo <owner/name>               GitHub repository (default: derived from the remote URL)
 --required-check <name>           repeatable; replaces the default release gate
+--cross-check-protection          read the required status checks registered on --main-ref
+                                  (local only; needs Administration: read)
 --require-protection-configured   refuse unless branch protection registers required checks
+                                  (requires --cross-check-protection)
 --apply                           perform the publication (default: plan only)
 --no-fetch                        skip `git fetch` before verifying
 ```
