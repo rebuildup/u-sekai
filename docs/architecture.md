@@ -46,7 +46,6 @@ adapters live under `src/reasoner/providers/` and translate domain
 `ReasonerRequest` -> provider-native JSON. CI uses
 `scriptedReasoner`, which is fully deterministic.
 
-<<<<<<< HEAD
 ## Structured Reasoner output (ADR-0008)
 
 `src/reasoner/structured.ts` is the only place a raw provider payload
