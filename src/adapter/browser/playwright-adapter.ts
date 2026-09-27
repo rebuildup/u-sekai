@@ -1,14 +1,31 @@
 /**
- * Playwright-backed browser adapter (ADR-0006). Exposes ONLY constrained
- * primitives to participants; the privileged DOM / network / console
- * information is collected server-side in the observer view and never
- * reaches the participant runtime.
+ * Real browser adapter (Playwright / Chromium).
  *
- * The adapter is intentionally driven by the runtime with `x, y`
- * coordinates; the runtime itself cannot reach Playwright selectors.
+ * Contract notes that are easy to get wrong and are therefore explicit here:
+ *
+ * - `VisualObservation.width/height` is the *actual* CSS viewport of the
+ *   live page, not a constant. The context is created with
+ *   `deviceScaleFactor: 1` so screenshot pixels equal CSS pixels and the
+ *   reported size describes the captured image.
+ * - `visual.screenshotHash` is a real SHA-256 over the PNG bytes
+ *   (hex), matching `src/domain/observation.ts`.
+ * - `visual.focused` is the bounding box of `document.activeElement`, or
+ *   `null` when nothing meaningful holds focus. It is never a hardcoded
+ *   zero rect.
+ * - `interactiveRegions[].selector` is a *verified* CSS path: the page
+ *   itself resolves the candidate back to the same element before the
+ *   value is reported. When that verification fails the field is
+ *   omitted rather than fabricated. The selector is observer-only; the
+ *   participant view never carries it (ADR-0006 / ADR-0009).
+ * - `ActionResult.observedAfter` is re-read from the live page after the
+ *   action settles, never echoed from the previous observation.
+ * - Failures map onto the existing `ActionResult.code` vocabulary
+ *   (`out_of_bounds`, `selector_not_found`, `timeout`, `unknown`) and
+ *   `close()` never swallows errors: teardown problems are either
+ *   rethrown or attached to the diagnostic that is being raised.
  */
 
-import { chromium, type Page } from 'playwright';
+import { chromium, type Browser, type BrowserContext, type Page } from 'playwright';
 import type { BrowserAdapter } from './interface.js';
 import type {
   ObserverObservation,
@@ -18,171 +35,437 @@ import type {
 import type { ParticipantAction } from '../../domain/capability.js';
 import type { ActionResult } from '../../domain/action.js';
 import { AdapterError } from '../../domain/errors.js';
+import { sha256Hex } from '../../evidence/hash.js';
 
-interface RecordedEntry {
-  ts: string;
-  kind: ParticipantAction['kind'];
+export interface PlaywrightAdapterOptions {
+  /** Headless by default so CI needs no display server. */
+  readonly headless?: boolean;
+  /** Viewport used for `open()`; also the reported screenshot size. */
+  readonly viewport?: { readonly width: number; readonly height: number };
+  /** Per-operation timeout (navigation, load-state waits) in ms. */
+  readonly actionTimeoutMs?: number;
+  /**
+   * How long to wait for a click to *start* a navigation before
+   * treating the page as settled (ms). Real navigation settles far
+   * slower; this only covers the gap between dispatching the input and
+   * the document swap beginning.
+   */
+  readonly settleGraceMs?: number;
+  /** Upper bound the `wait` primitive is clamped to, in ms. */
+  readonly maxWaitMs?: number;
 }
+
+export interface RecordedAction {
+  readonly ts: string;
+  readonly kind: ParticipantAction['kind'];
+  readonly status: ActionResult['status'];
+  readonly note?: string;
+}
+
+export interface CloseDiagnostics {
+  /** Errors collected while releasing page / context / browser. */
+  readonly errors: ReadonlyArray<string>;
+  /** A browser was actually running when close() started. */
+  readonly browserWasRunning: boolean;
+  /** `browser.isConnected()` observed after teardown. */
+  readonly browserConnectedAfter: boolean;
+}
+
+const DEFAULT_VIEWPORT = { width: 1280, height: 800 } as const;
+const DEFAULT_ACTION_TIMEOUT_MS = 10_000;
+const DEFAULT_SETTLE_GRACE_MS = 250;
+const DEFAULT_MAX_WAIT_MS = 30_000;
+/** How far the in-page selector builder may walk up the tree. */
+const MAX_SELECTOR_DEPTH = 8;
 
 export class PlaywrightAdapter implements BrowserAdapter {
   readonly adapterId = 'playwright';
 
-  private browser = null as unknown as Awaited<ReturnType<typeof chromium.launch>>;
-  private context = null as unknown as Awaited<ReturnType<NonNullable<typeof this.browser>['newContext']>>;
-  private page = null as unknown as Page;
+  private browser: Browser | null = null;
+  private context: BrowserContext | null = null;
+  private page: Page | null = null;
   private currentUrl = '';
   private currentTitle = '';
+  private viewport: { width: number; height: number } = { ...DEFAULT_VIEWPORT };
   private consoleLog: Array<{ level: string; text: string; ts: string }> = [];
   private networkLog: Array<{ method: string; url: string; status: number; ts: string }> = [];
+  private recentActions: RecordedAction[] = [];
+  private lastClose: CloseDiagnostics | null = null;
 
-  async open(url: string, viewport: { width: number; height: number } = { width: 1280, height: 800 }): Promise<void> {
+  private readonly headless: boolean;
+  private readonly defaultViewport: { width: number; height: number };
+  private readonly actionTimeoutMs: number;
+  private readonly settleGraceMs: number;
+  private readonly maxWaitMs: number;
+
+  constructor(opts: PlaywrightAdapterOptions = {}) {
+    this.headless = opts.headless ?? true;
+    this.defaultViewport = opts.viewport ? { ...opts.viewport } : { ...DEFAULT_VIEWPORT };
+    this.actionTimeoutMs = opts.actionTimeoutMs ?? DEFAULT_ACTION_TIMEOUT_MS;
+    this.settleGraceMs = opts.settleGraceMs ?? DEFAULT_SETTLE_GRACE_MS;
+    this.maxWaitMs = opts.maxWaitMs ?? DEFAULT_MAX_WAIT_MS;
+    this.viewport = { ...this.defaultViewport };
+  }
+
+  async open(url: string, viewport?: { width: number; height: number }): Promise<void> {
+    if (this.browser) {
+      throw new AdapterError('playwright open called while a browser is already open', 'playwright', { url });
+    }
+    this.viewport = { ...(viewport ?? this.defaultViewport) };
+    let phase = 'launch';
     try {
-      this.browser = await chromium.launch();
-      this.context = await this.browser.newContext({ viewport });
+      this.browser = await chromium.launch({ headless: this.headless });
+      phase = 'newContext';
+      this.context = await this.browser.newContext({
+        viewport: this.viewport,
+        // Keeps screenshot pixels aligned with the reported CSS viewport.
+        deviceScaleFactor: 1,
+      });
+      this.context.setDefaultTimeout(this.actionTimeoutMs);
+      this.context.setDefaultNavigationTimeout(this.actionTimeoutMs);
+      phase = 'newPage';
       this.page = await this.context.newPage();
-      this.page.on('console', (msg) => {
-        this.consoleLog.push({
-          level: msg.type(),
-          text: msg.text(),
-          ts: new Date().toISOString(),
-        });
-      });
-      this.page.on('response', (res) => {
-        this.networkLog.push({
-          method: res.request().method(),
-          url: res.url(),
-          status: res.status(),
-          ts: new Date().toISOString(),
-        });
-      });
-      await this.page.goto(url, { waitUntil: 'domcontentloaded' });
+      this.attachPageListeners(this.page);
+      phase = 'goto';
+      const response = await this.page.goto(url, { waitUntil: 'domcontentloaded' });
+      if (response && !response.ok() && response.status() >= 400) {
+        throw new Error(`navigation returned HTTP ${response.status()} for ${url}`);
+      }
       this.currentUrl = this.page.url();
       this.currentTitle = await this.page.title();
     } catch (err) {
-      await this.close();
-      throw new AdapterError(`playwright open failed: ${(err as Error).message}`, 'playwright');
+      let teardownErrors: string[] = [];
+      try {
+        await this.close();
+      } catch (closeErr) {
+        // `close()` already reports every teardown problem; keep them
+        // attached to the diagnostic we are raising instead of dropping.
+        teardownErrors = (closeErr as AdapterError).detail['errors'] as string[] ?? [];
+      }
+      const diagnostics = this.lastClose;
+      const teardownNote = (teardownErrors.length > 0 || (diagnostics?.errors.length ?? 0) > 0)
+        ? `; teardown also reported: ${(diagnostics?.errors ?? []).join('; ')}`
+        : '';
+      throw new AdapterError(
+        `playwright open failed during ${phase} for ${url}: ${describeError(err)}${teardownNote}`,
+        'playwright',
+        { url, phase, teardownErrors },
+      );
     }
   }
 
   async observe(stepIndex: number): Promise<ObserverObservation> {
-    if (!this.page) throw new AdapterError('playwright observe before open', 'playwright');
-    const png = await this.page.screenshot({ fullPage: false });
-    const domHtml = await this.page.content();
-    const title = await this.page.title();
-    const url = this.page.url();
-    this.currentTitle = title;
-    this.currentUrl = url;
-    const visibleText = await this.evaluateVisibleText();
-    const interactive = await this.evaluateInteractiveRegions();
-    const aria = await this.evaluateAria();
-    const visual: VisualObservation = {
-      width: 1280,
-      height: 800,
-      screenshotPng: png,
-      screenshotHash: hashBytes(png),
-      visibleText,
-      focused: { x: 0, y: 0, width: 0, height: 0 },
-    };
-    return {
-      stepIndex,
-      url,
-      title,
-      capturedAt: new Date().toISOString(),
-      visual,
-      aria,
-      domHtml,
-      console: [...this.consoleLog],
-      network: [...this.networkLog],
-      interactiveRegions: interactive,
-    };
+    const page = this.requirePage('observe');
+    const phaseRef = { phase: 'screenshot' };
+    try {
+      const png = await page.screenshot({
+        type: 'png',
+        fullPage: false,
+        // Deterministic pixels: no CSS animation, no blinking caret.
+        animations: 'disabled',
+        caret: 'hide',
+      });
+      const size = page.viewportSize() ?? this.viewport;
+      phaseRef.phase = 'title';
+      const title = await page.title();
+      const url = page.url();
+      this.currentTitle = title;
+      this.currentUrl = url;
+      phaseRef.phase = 'visibleText';
+      const visibleText = await page.evaluate(() =>
+        document.body ? document.body.innerText.replace(/\s+/g, ' ').trim() : '',
+      );
+      phaseRef.phase = 'interactiveRegions';
+      const interactive = await this.evaluateInteractiveRegions();
+      phaseRef.phase = 'focus';
+      const focused = await this.evaluateFocusRect();
+      phaseRef.phase = 'aria';
+      const aria = await this.evaluateAria();
+      phaseRef.phase = 'dom';
+      const domHtml = await page.content();
+      const visual: VisualObservation = {
+        width: size.width,
+        height: size.height,
+        screenshotPng: png,
+        screenshotHash: sha256Hex(png),
+        visibleText,
+        focused,
+      };
+      return {
+        stepIndex,
+        url,
+        title,
+        capturedAt: new Date().toISOString(),
+        visual,
+        aria,
+        domHtml,
+        console: [...this.consoleLog],
+        network: [...this.networkLog],
+        interactiveRegions: interactive,
+      };
+    } catch (err) {
+      throw new AdapterError(
+        `playwright observe failed during ${phaseRef.phase} at step ${stepIndex} (url=${this.currentUrl || 'unknown'}): ${describeError(err)}`,
+        'playwright',
+        { stepIndex, phase: phaseRef.phase, url: this.currentUrl },
+      );
+    }
   }
 
   async execute(action: ParticipantAction): Promise<ActionResult> {
-    if (!this.page) throw new AdapterError('playwright execute before open', 'playwright');
-    switch (action.kind) {
-      case 'clickByCoords':
-      case 'tapByCoords':
-        await this.page.mouse.click(action.x, action.y);
-        return { status: 'ok', observedAfter: { url: this.currentUrl, title: this.currentTitle } };
-      case 'typeText':
-        await this.page.keyboard.type(action.text);
-        return { status: 'ok', observedAfter: { url: this.currentUrl, title: this.currentTitle } };
-      case 'scroll':
-        await this.evaluateScroll(action.direction, action.amount);
-        return { status: 'ok', observedAfter: { url: this.currentUrl, title: this.currentTitle } };
-      case 'wait':
-        await this.page.waitForTimeout(Math.max(0, Math.min(action.milliseconds, 30_000)));
-        return { status: 'ok', observedAfter: { url: this.currentUrl, title: this.currentTitle } };
-      case 'finish':
-        return { status: 'ok', observedAfter: { url: this.currentUrl, title: this.currentTitle }, note: 'finish' };
+    const page = this.requirePage('execute');
+    const now = new Date().toISOString();
+    try {
+      switch (action.kind) {
+        case 'clickByCoords':
+        case 'tapByCoords':
+          return await this.executeClick(page, action, now);
+        case 'typeText':
+          return await this.executeTypeText(page, action.text, now);
+        case 'scroll':
+          return await this.executeScroll(page, action.direction, action.amount, now);
+        case 'wait': {
+          const requested = Math.max(0, Math.min(action.milliseconds, this.maxWaitMs));
+          await page.waitForTimeout(requested);
+          const observed = await this.readCurrentPage(page);
+          return this.record(now, action.kind, {
+            status: 'ok',
+            observedAfter: observed,
+            note: `waited ${requested}ms${requested === this.maxWaitMs && action.milliseconds > this.maxWaitMs ? ' (clamped)' : ''}`,
+          });
+        }
+        case 'finish': {
+          const observed = await this.readCurrentPage(page);
+          return this.record(now, action.kind, {
+            status: 'ok',
+            observedAfter: observed,
+            note: 'finish',
+          });
+        }
+      }
+    } catch (err) {
+      if (err instanceof AdapterError) throw err;
+      return this.record(now, action.kind, {
+        status: 'error',
+        note: `playwright ${action.kind} failed: ${describeError(err)}`,
+        code: 'unknown',
+      });
     }
-    return { status: 'error', note: 'unknown', code: 'unknown' };
   }
 
+  /**
+   * Releases page, context and browser. Teardown problems are collected
+   * and rethrown as a single `AdapterError` instead of being dropped, so
+   * a leaked browser process or a half-closed context cannot hide behind
+   * a green result.
+   */
   async close(): Promise<void> {
-    try {
-      if (this.page) await this.page.close();
-    } catch { /* ignore */ }
-    try {
-      if (this.context) await this.context.close();
-    } catch { /* ignore */ }
-    try {
-      if (this.browser) await this.browser.close();
-    } catch { /* ignore */ }
-    this.page = null as unknown as Page;
-    this.context = null as unknown as Awaited<ReturnType<NonNullable<typeof this.browser>['newContext']>>;
-    this.browser = null as unknown as Awaited<ReturnType<typeof chromium.launch>>;
+    const errors: string[] = [];
+    const browserWasRunning = this.browser !== null;
+
+    if (this.page) {
+      const page = this.page;
+      this.page = null;
+      try {
+        await page.close();
+      } catch (err) {
+        errors.push(`page.close: ${describeError(err)}`);
+      }
+    }
+    if (this.context) {
+      const context = this.context;
+      this.context = null;
+      try {
+        await context.close();
+      } catch (err) {
+        errors.push(`context.close: ${describeError(err)}`);
+      }
+    }
+    let browserConnectedAfter = false;
+    if (this.browser) {
+      const browser = this.browser;
+      this.browser = null;
+      try {
+        await browser.close();
+      } catch (err) {
+        errors.push(`browser.close: ${describeError(err)}`);
+      }
+      browserConnectedAfter = browser.isConnected();
+      if (browserConnectedAfter) {
+        errors.push('browser still reports isConnected() after close()');
+      }
+    }
+
+    this.currentUrl = '';
+    this.currentTitle = '';
     this.consoleLog = [];
     this.networkLog = [];
+    this.lastClose = { errors, browserWasRunning, browserConnectedAfter };
+
+    if (errors.length > 0) {
+      throw new AdapterError(`playwright close failed: ${errors.join('; ')}`, 'playwright', { errors });
+    }
   }
 
-  private async evaluateVisibleText(): Promise<string> {
-    if (!this.page) return '';
-    return this.page.evaluate(() => document.body ? document.body.innerText.replace(/\s+/g, ' ').trim() : '');
+  // --- diagnostic accessors (tests / operators) -------------------
+
+  /** Executed actions with their real outcome, newest last. */
+  __recentForTest(): ReadonlyArray<RecordedAction> {
+    return this.recentActions;
   }
 
-  private async evaluateInteractiveRegions(): Promise<Array<{ selector: string; label: string; bbox: { x: number; y: number; width: number; height: number } }>> {
-    if (!this.page) return [];
-    const list = await this.page.evaluate(() => {
-      const out: Array<{ selector: string; label: string; bbox: { x: number; y: number; width: number; height: number } }> = [];
-      let i = 0;
-      const targets = Array.from(document.querySelectorAll('button, a, input, textarea, select')) as HTMLElement[];
-      for (const el of targets) {
-        i += 1;
-        const rect = el.getBoundingClientRect();
-        out.push({
-          selector: `[${el.tagName.toLowerCase()}][data-uid="${i}"]`,
-          label: el.textContent?.trim().slice(0, 60) || el.getAttribute('aria-label') || el.tagName.toLowerCase(),
-          bbox: { x: rect.left, y: rect.top, width: rect.width, height: rect.height },
-        });
-      }
-      return out;
+  __isOpenForTest(): boolean {
+    return this.browser !== null && this.page !== null;
+  }
+
+  __lastCloseForTest(): CloseDiagnostics | null {
+    return this.lastClose;
+  }
+
+  __resetRecentForTest(): void {
+    this.recentActions = [];
+  }
+
+  // --- internals --------------------------------------------------
+
+  private requirePage(operation: string): Page {
+    if (!this.page || !this.browser) {
+      throw new AdapterError(
+        `playwright ${operation} called before open() completed (browser is not running)`,
+        'playwright',
+        { operation },
+      );
+    }
+    return this.page;
+  }
+
+  private attachPageListeners(page: Page): void {
+    page.on('console', (msg) => {
+      this.consoleLog.push({ level: msg.type(), text: msg.text(), ts: new Date().toISOString() });
     });
-    return list;
-  }
-
-  private async evaluateAria(): Promise<AriaObservation> {
-    if (!this.page) return { role: 'document', name: '', children: [] };
-    const a = await this.page.evaluate(() => {
-      function summarise(el: Element, depth: number): { role: string; name: string; children: Array<{ role: string; name: string }> } {
-        const role = el.getAttribute('role') ?? el.tagName.toLowerCase();
-        const name = (el.getAttribute('aria-label') ?? el.textContent ?? '').trim().slice(0, 80);
-        const children: Array<{ role: string; name: string }> = [];
-        if (depth > 0) {
-          for (const c of Array.from(el.children).slice(0, 10)) {
-            children.push({ role: (c.getAttribute('role') ?? c.tagName.toLowerCase()), name: (c.textContent ?? '').trim().slice(0, 60) });
-          }
-        }
-        return { role, name, children };
-      }
-      return summarise(document.body, 1);
+    page.on('response', (res) => {
+      this.networkLog.push({
+        method: res.request().method(),
+        url: res.url(),
+        status: res.status(),
+        ts: new Date().toISOString(),
+      });
     });
-    return a;
+    page.on('pageerror', (err) => {
+      this.consoleLog.push({ level: 'pageerror', text: err.message, ts: new Date().toISOString() });
+    });
   }
 
-  private async evaluateScroll(direction: 'up' | 'down' | 'left' | 'right', amount: number): Promise<void> {
-    if (!this.page) return;
-    await this.page.evaluate(
+  private record(now: string, kind: ParticipantAction['kind'], result: ActionResult): ActionResult {
+    const note = result.note;
+    this.recentActions.push({
+      ts: now,
+      kind,
+      status: result.status,
+      ...(note !== undefined ? { note } : {}),
+    });
+    return result;
+  }
+
+  private async executeClick(
+    page: Page,
+    action: { kind: 'clickByCoords' | 'tapByCoords'; x: number; y: number },
+    now: string,
+  ): Promise<ActionResult> {
+    const size = page.viewportSize() ?? this.viewport;
+    if (action.x < 0 || action.y < 0 || action.x >= size.width || action.y >= size.height) {
+      return this.record(now, action.kind, {
+        status: 'error',
+        note: `coordinates (${action.x}, ${action.y}) are outside the ${size.width}x${size.height} viewport; nothing was clicked`,
+        code: 'out_of_bounds',
+      });
+    }
+    const hit = await page.evaluate(
+      ([x, y]) => {
+        const el = document.elementFromPoint(x, y);
+        if (!el) return null;
+        return {
+          tag: el.tagName.toLowerCase(),
+          label: (el.getAttribute('aria-label') ?? el.textContent ?? '')
+            .replace(/\s+/g, ' ')
+            .trim()
+            .slice(0, 40),
+        };
+      },
+      [action.x, action.y] as const,
+    );
+    if (!hit) {
+      return this.record(now, action.kind, {
+        status: 'error',
+        note: `no element at (${action.x}, ${action.y}) inside the ${size.width}x${size.height} viewport; nothing was clicked`,
+        code: 'out_of_bounds',
+      });
+    }
+    const before = { url: this.currentUrl, title: this.currentTitle };
+    // Arm the navigation watcher BEFORE dispatching the click: a click
+    // that triggers a document swap would otherwise settle on the
+    // outgoing document and report a stale url/title.
+    const navigation = this.waitForMainFrameNavigation();
+    await page.mouse.click(action.x, action.y);
+    const settled = await this.settleAfterAction(navigation, 'click');
+    if (!settled.ok) {
+      const observed = await this.readCurrentPage(page);
+      return this.record(now, action.kind, {
+        status: 'error',
+        note: `click at (${action.x}, ${action.y}) on <${hit.tag}> did not settle within ${this.actionTimeoutMs}ms (url now ${observed.url}): ${settled.detail}`,
+        code: 'timeout',
+      });
+    }
+    const observed = await this.readCurrentPage(page);
+    const navigated = observed.url !== before.url ? `; navigated to ${observed.url}` : '';
+    return this.record(now, action.kind, {
+      status: 'ok',
+      observedAfter: observed,
+      note: `clicked <${hit.tag}${hit.label ? ` "${hit.label}"` : ''}> at (${action.x}, ${action.y})${navigated}`,
+    });
+  }
+
+  private async executeTypeText(page: Page, text: string, now: string): Promise<ActionResult> {
+    const focus = await this.evaluateFocusTarget();
+    if (!focus.editable) {
+      return this.record(now, 'typeText', {
+        status: 'error',
+        note: `typeText has no editable target: focus is on <${focus.tag ?? 'nothing'}>. Click a text field before typing; nothing was typed.`,
+        code: 'selector_not_found',
+      });
+    }
+    await page.keyboard.type(text, { delay: 0 });
+    const after = await page.evaluate(() => {
+      const el = document.activeElement;
+      if (!el) return { length: -1, tag: 'none' };
+      const value = 'value' in el && typeof (el as HTMLInputElement).value === 'string'
+        ? (el as HTMLInputElement).value
+        : (el.textContent ?? '');
+      return { length: value.length, tag: el.tagName.toLowerCase() };
+    });
+    if (after.length !== text.length) {
+      return this.record(now, 'typeText', {
+        status: 'error',
+        note: `typed ${text.length} chars but <${after.tag}> reports ${after.length} after typing; the page may have swallowed the input`,
+        code: 'unknown',
+      });
+    }
+    const observed = await this.readCurrentPage(page);
+    return this.record(now, 'typeText', {
+      status: 'ok',
+      observedAfter: observed,
+      note: `typed ${text.length} chars into <${after.tag}>`,
+    });
+  }
+
+  private async executeScroll(
+    page: Page,
+    direction: 'up' | 'down' | 'left' | 'right',
+    amount: number,
+    now: string,
+  ): Promise<ActionResult> {
+    const before = await page.evaluate(() => ({ x: window.scrollX, y: window.scrollY }));
+    await page.evaluate(
       ({ direction: d, amount: a }) => {
         const x = d === 'left' ? -a : d === 'right' ? a : 0;
         const y = d === 'up' ? -a : d === 'down' ? a : 0;
@@ -190,19 +473,238 @@ export class PlaywrightAdapter implements BrowserAdapter {
       },
       { direction, amount },
     );
+    const after = await page.evaluate(() => ({ x: window.scrollX, y: window.scrollY }));
+    const observed = await this.readCurrentPage(page);
+    const moved = after.x !== before.x || after.y !== before.y;
+    return this.record(now, 'scroll', {
+      status: 'ok',
+      observedAfter: observed,
+      note: moved
+        ? `scrolled ${direction} ${amount} (offset ${before.x},${before.y} -> ${after.x},${after.y})`
+        : `scrolled ${direction} ${amount} but the offset stayed at ${after.x},${after.y} (page is not scrollable here)`,
+    });
   }
 
-  __recentForTest(): ReadonlyArray<RecordedEntry> {
-    return [];
+  /**
+   * Waits for the page to reach `load` after an action.
+   *
+   * `armedNavigation` is the watcher started before the input was
+   * dispatched; it resolves `true` once the main frame swapped
+   * documents and `false` when the page simply stayed put. After the
+   * load state is reached we look once more for a follow-up navigation,
+   * because a redirect can land after the first document committed.
+   *
+   * A timeout is *returned*, not swallowed, so the caller can turn it
+   * into a typed `timeout` result instead of reporting a stale page.
+   */
+  private async settleAfterAction(
+    armedNavigation: Promise<boolean>,
+    trigger: string,
+  ): Promise<{ ok: true } | { ok: false; detail: string }> {
+    const page = this.page;
+    if (!page) return { ok: false, detail: `${trigger}: page is gone before settle` };
+    await armedNavigation;
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        await page.waitForLoadState('load', { timeout: this.actionTimeoutMs });
+      } catch (err) {
+        const readyState = await page
+          .evaluate(() => document.readyState)
+          .catch(() => 'unavailable' as const);
+        if (readyState === 'complete') return { ok: true };
+        return {
+          ok: false,
+          detail: `${trigger} left the document at readyState=${readyState}: ${describeError(err)}`,
+        };
+      }
+      if (attempt === 0 && !(await this.waitForMainFrameNavigation())) {
+        return { ok: true };
+      }
+    }
+    return { ok: true };
+  }
+
+  /**
+   * Resolves `true` when the main frame navigates within the grace
+   * window, `false` when the page stayed on the same document. Never
+   * rejects, so it is safe to await after the fact.
+   */
+  private async waitForMainFrameNavigation(): Promise<boolean> {
+    const page = this.page;
+    if (!page) return false;
+    return page
+      .waitForEvent('framenavigated', {
+        predicate: (frame) => frame === page.mainFrame(),
+        timeout: this.settleGraceMs,
+      })
+      .then(() => true, () => false);
+  }
+
+  private async readCurrentPage(page: Page): Promise<{ url: string; title: string }> {
+    const url = page.url();
+    const title = await page.title();
+    this.currentUrl = url;
+    this.currentTitle = title;
+    return { url, title };
+  }
+
+  private async evaluateFocusRect(): Promise<VisualObservation['focused']> {
+    const page = this.page;
+    if (!page) return null;
+    return page.evaluate(() => {
+      const el = document.activeElement;
+      if (!el || el === document.body || el === document.documentElement) return null;
+      const rect = el.getBoundingClientRect();
+      if (rect.width === 0 || rect.height === 0) return null;
+      return { x: rect.left, y: rect.top, width: rect.width, height: rect.height };
+    });
+  }
+
+  private async evaluateFocusTarget(): Promise<{ editable: boolean; tag: string | null }> {
+    const page = this.page;
+    if (!page) return { editable: false, tag: null };
+    return page.evaluate(() => {
+      const el = document.activeElement as HTMLElement | null;
+      if (!el) return { editable: false, tag: null };
+      const tag = el.tagName.toLowerCase();
+      const isTextField = tag === 'input' && ['text', 'search', 'email', 'url', 'tel', 'password', ''].includes(
+        (el as HTMLInputElement).type ?? '',
+      );
+      const editable = isTextField || tag === 'textarea' || el.isContentEditable === true;
+      return { editable, tag };
+    });
+  }
+
+  private async evaluateInteractiveRegions(): Promise<Array<{
+    selector?: string;
+    label: string;
+    bbox: { x: number; y: number; width: number; height: number };
+  }>> {
+    const page = this.page;
+    if (!page) return [];
+    return page.evaluate((maxDepth) => {
+      interface Region {
+        selector?: string;
+        label: string;
+        bbox: { x: number; y: number; width: number; height: number };
+      }
+      const out: Region[] = [];
+      const targets = Array.from(
+        document.querySelectorAll('button, a[href], input, textarea, select, [role="button"], [role="link"]'),
+      );
+      for (const el of targets) {
+        const rect = el.getBoundingClientRect();
+        if (rect.width <= 0 || rect.height <= 0) continue;
+        if (window.getComputedStyle(el).visibility === 'hidden') continue;
+        const region: Region = {
+          label: labelOf(el),
+          bbox: { x: rect.left, y: rect.top, width: rect.width, height: rect.height },
+        };
+        // Only report a selector the page itself can resolve back to this
+        // exact element. An unverifiable path is omitted, never faked.
+        const selector = verifiedSelectorFor(el, maxDepth);
+        if (selector) region.selector = selector;
+        out.push(region);
+      }
+      return out;
+
+      function labelOf(el: Element): string {
+        const clean = (s: string | null): string => (s ?? '').replace(/\s+/g, ' ').trim();
+        const aria = clean(el.getAttribute('aria-label'));
+        if (aria) return aria.slice(0, 60);
+        const text = clean(el.textContent);
+        if (text) return text.slice(0, 60);
+        const placeholder = clean(el.getAttribute('placeholder'));
+        if (placeholder) return placeholder.slice(0, 60);
+        const name = clean(el.getAttribute('name'));
+        if (name) return `${el.tagName.toLowerCase()} named "${name}"`.slice(0, 60);
+        const type = clean(el.getAttribute('type'));
+        if (type) return `${type} input`.slice(0, 60);
+        return el.tagName.toLowerCase();
+      }
+
+      function verifiedSelectorFor(el: Element, maxDepth: number): string | null {
+        const escape = (s: string): string =>
+          typeof CSS !== 'undefined' && typeof CSS.escape === 'function' ? CSS.escape(s) : s.replace(/[^\w-]/g, (c) => `\\${c}`);
+        const unique = (candidate: string): boolean => {
+          try {
+            return document.querySelectorAll(candidate).length === 1;
+          } catch {
+            return false;
+          }
+        };
+        // Most specific first, so the reported path is informative to a
+        // human reading the artifact rather than a bare tag name.
+        for (const hint of attributeHints(el)) {
+          if (unique(hint)) return hint;
+        }
+        const parts: string[] = [];
+        let node: Element | null = el;
+        let depth = 0;
+        while (node && depth < maxDepth) {
+          let part = node.tagName.toLowerCase();
+          if (node !== el && node.id) {
+            parts.unshift(`#${escape(node.id)}`);
+            const candidate = parts.join(' > ');
+            if (unique(candidate)) return candidate;
+            break;
+          }
+          const parent: Element | null = node.parentElement;
+          if (parent) {
+            const sameTag = Array.from(parent.children).filter((c) => c.tagName === node?.tagName);
+            if (sameTag.length > 1) part += `:nth-of-type(${sameTag.indexOf(node) + 1})`;
+          }
+          parts.unshift(part);
+          const candidate = parts.join(' > ');
+          if (unique(candidate)) return candidate;
+          node = parent;
+          depth += 1;
+        }
+        return null;
+      }
+
+      /** `name` / `type` / `aria-label` discriminators, most stable first. */
+      function attributeHints(el: Element): string[] {
+        const tag = el.tagName.toLowerCase();
+        const hints: string[] = [];
+        if (el.id) hints.push(`#${el.id.replace(/[^\w-]/g, (c) => `\\${c}`)}`);
+        for (const attribute of ['name', 'aria-label', 'type', 'href', 'placeholder', 'role']) {
+          const value = el.getAttribute(attribute);
+          if (value) hints.push(`${tag}[${attribute}=${JSON.stringify(value)}]`);
+        }
+        return hints;
+      }
+    }, MAX_SELECTOR_DEPTH);
+  }
+
+  private async evaluateAria(): Promise<AriaObservation> {
+    const page = this.page;
+    if (!page) return { role: 'document', name: '', children: [] };
+    return page.evaluate(() => {
+      function summarise(el: Element, depth: number): { role: string; name: string; children: Array<{ role: string; name: string }> } {
+        const role = el.getAttribute('role') ?? el.tagName.toLowerCase();
+        const name = (el.getAttribute('aria-label') ?? el.textContent ?? '').trim().slice(0, 80);
+        const children: Array<{ role: string; name: string }> = [];
+        if (depth > 0) {
+          for (const c of Array.from(el.children).slice(0, 10)) {
+            children.push({
+              role: (c.getAttribute('role') ?? c.tagName.toLowerCase()),
+              name: (c.textContent ?? '').trim().slice(0, 60),
+            });
+          }
+        }
+        return { role, name, children };
+      }
+      return summarise(document.body, 1);
+    });
   }
 }
 
-function hashBytes(bytes: Uint8Array): string {
-  // Tiny FNV-1a 32-bit; not cryptographic, just a stable per-step id.
-  let h = 0x811c9dc5;
-  for (let i = 0; i < bytes.length; i++) {
-    h ^= bytes[i] ?? 0;
-    h = Math.imul(h, 0x01000193);
+function describeError(err: unknown): string {
+  if (err instanceof Error) {
+    const cause = (err as { cause?: unknown }).cause;
+    const causeText = cause instanceof Error ? ` (cause: ${cause.message})` : '';
+    return `${err.name}: ${err.message}${causeText}`;
   }
-  return `fnv1a:${(h >>> 0).toString(16).padStart(8, '0')}`;
+  return String(err);
 }

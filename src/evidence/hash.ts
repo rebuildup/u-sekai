@@ -1,3 +1,5 @@
+import { createHash } from 'node:crypto';
+
 /**
  * Stable one-way hash for prompt digests and event ordering.
  *
@@ -17,4 +19,16 @@ export function fnv1aHex(input: string): string {
 
 export function digestRequest(systemPrompt: string, body: string): string {
   return `fnv1a:${fnv1aHex(systemPrompt)}:${fnv1aHex(body)}`;
+}
+
+/**
+ * Real SHA-256 (hex) of raw bytes.
+ *
+ * `VisualObservation.screenshotHash` is specified as SHA-256 of the
+ * screenshot bytes, so the browser adapter hashes with this function
+ * and the artifact writer uses the same helper for the PNG file it
+ * writes. One implementation, one contract.
+ */
+export function sha256Hex(bytes: Uint8Array): string {
+  return createHash('sha256').update(bytes).digest('hex');
 }
