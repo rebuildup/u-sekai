@@ -269,11 +269,12 @@ function remoteRefs(remote) {
  * the remote actually advertises right now, without pruning anything.
  */
 function remoteRefsContaining(remote, sha, advertisedHeads) {
+  const prefix = `${remote}/`;
   const listed = runCommand('git', ['branch', '-r', '--contains', sha], { allowFailure: true })
     .stdout.split('\n')
     .map((line) => line.trim())
     .filter((line) => line !== '' && !line.includes('->'))
-    .map((line) => line.replace(new RegExp(`^${remote}/`), ''))
+    .map((line) => (line.startsWith(prefix) ? line.slice(prefix.length) : line))
     .filter((name) => advertisedHeads.has(name));
   return [...new Set(listed)].sort();
 }
@@ -588,25 +589,43 @@ function main(argv) {
       info('nothing to do: the tag and the GitHub Release already exist at the expected commit');
       return;
     }
+
+    // Re-read each artifact immediately before creating it. Two concurrent
+    // publishing runs must converge on one tag and one Release rather than race
+    // into a second artifact; the post-condition assertion below still fails
+    // loudly if the pre-existing artifact points somewhere else.
     if (existingTag === null) {
-      ghApiWrite(`repos/${repo}/git/refs`, `refs/tags/${tagName}`, targetSha);
-      info(`created tag ${tagName} at ${targetSha}`);
+      const current = readExistingTag(repo, tagName);
+      if (current === null) {
+        ghApiWrite(`repos/${repo}/git/refs`, `refs/tags/${tagName}`, targetSha);
+        info(`created tag ${tagName} at ${targetSha}`);
+      } else {
+        info(`tag ${tagName} already appeared at ${current.sha}; not creating a second one`);
+      }
     }
     if (existingRelease === null) {
-      const created = runCommand('gh', [
-        'release',
-        'create',
-        tagName,
-        '--repo',
-        repo,
-        '--target',
-        targetSha,
-        '--title',
-        tagName,
-        '--generate-notes',
-      ]);
-      const url = firstLine(created.stdout);
-      info(`created GitHub Release ${tagName}${url === '' ? '' : ` (${url})`}`);
+      const current = readExistingRelease(repo, tagName, existingTag?.sha ?? null);
+      if (current === null) {
+        const created = runCommand('gh', [
+          'release',
+          'create',
+          tagName,
+          '--repo',
+          repo,
+          '--target',
+          targetSha,
+          '--title',
+          tagName,
+          // Release notes come from GitHub's own generation over the merged
+          // pull requests, so the artifact is reproducible from durable
+          // repository history rather than from an agent's context.
+          '--generate-notes',
+        ]);
+        const url = firstLine(created.stdout);
+        info(`created GitHub Release ${tagName}${url === '' ? '' : ` (${url})`}`);
+      } else {
+        info(`GitHub Release ${tagName} already appeared; not creating a second one`);
+      }
     }
     assertPublished(repo, tagName, targetSha);
     info(`published ${tagName} -> ${targetSha} and verified the result`);

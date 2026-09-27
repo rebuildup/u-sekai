@@ -66,7 +66,13 @@ export const PR_TIME_CHECK_CONTEXTS = Object.freeze([
   'release-source-check / release-source-check',
 ]);
 
-const PR_TIME_CHECK_NAMES = Object.freeze(['release-source-check']);
+/**
+ * The bare check-run names of those merge-time checks, derived from the list
+ * above so the two cannot drift.
+ */
+const PR_TIME_CHECK_NAMES = Object.freeze(
+  PR_TIME_CHECK_CONTEXTS.map((context) => context.split(' / ').at(-1) ?? context),
+);
 
 /**
  * Whether a registered status check context names `name`, in either the
