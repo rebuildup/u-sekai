@@ -1,13 +1,21 @@
 ---
 name: worktree-workflow
-description: WSL/LinuxでWorktrunkを使ってticket/review worktreeを作成・切替・一覧・cleanupし、共有hostのdev server port/process lifecycleを安全に扱う時に使用する。
+description: current release-driven profileでWorktrunkをWSL/Linux workspace lifecycle Practiceとして使い、同等以上のguaranteeを持つalternativeへのrefinementも判断する時に使用する。
 ---
 
 # Worktree Workflow
 
-WorktrunkをGit worktreeの操作frontendとして使用する。対象の第一優先はWSL2/LinuxとLinux hostであり、native WindowsをこのSkillの必須targetにはしない。
+Layer: **Practice**
 
-## Invariants
+Current release-driven profileではWorktrunkをGit worktreeの標準操作frontendとして使用する。WSL2/LinuxまたはLinux hostでWorktrunkが利用可能なら、日常のworktree作成・切替・一覧・review checkout・cleanupは原則 `wt` 経由で行う。
+
+Worktrunk自体はConstitutionではない。採用理由はworkspace lifecycle / recoverability / process-port ergonomicsであり、native agent workspace等が同等以上のguaranteeを提供する場合はADR-0017のrefinement contractに従って置換できる。
+
+単にagentがnative `git worktree` に慣れていることはdeviation evidenceにならない。native WindowsをこのSkillの必須targetにはしない。
+
+このSkillは主に**authoring workspace lifecycle**を扱う。ADR-0020のverification-only executorへworktree作成を機械的に要求しない。Windows native等でproject/tooling constraintによりworktreeが使えない検証は`sandbox-runtime` / `quality-gate`のverification contractへrouteする。
+
+## Current practice guarantees
 
 - Worktrunkはworkspace lifecycle toolであり、execution isolation boundaryではない。
 - branch/ref/GitHub Issue/PRがcanonical stateであり、worktree pathやWorktrunk local stateをSoTにしない。
@@ -19,7 +27,7 @@ WorktrunkをGit worktreeの操作frontendとして使用する。対象の第一
 
 ## Prerequisites
 
-Worktrunkが未導入なら、repositoryのreproducible toolchainに含められるかを先に確認する。
+最初に `wt --version` で利用可否を確認する。未導入ならrepositoryのreproducible toolchainに含められるかを確認し、安全にprovision可能なら導入する。導入不能・非対応・権限不足の場合だけnative `git worktree`へfallbackし、恒常的な制約ならproject documentationへ理由を残す。
 
 Cargoで導入する例:
 
@@ -50,10 +58,16 @@ wt switch release-0-2-0
 Issue #123用ticket branch/worktreeを作成:
 
 ```bash
-wt switch --create 123
+wt switch --create 123 --base=release-0-2-0
 ```
 
-作成元はcurrent expected baseでなければならない。stacked ticketではimmediate predecessor snapshot/branchとの関係を`github-delivery` / `parallel-orchestration` policyに従って決める。
+`wt switch --create <name>` は `--base` を指定しないとdefault branch（通常 `main`）をbaseにするため、release branchやpredecessor branchから派生させたい場合は必ず `--base` を明示する。
+
+- current HEADから派生: `wt switch --create <name> --base=@`
+- 指定release branchから派生: `wt switch --create <name> --base=release-x-y-z`
+- stacked ticketでimmediate predecessor branchから派生: `wt switch --create <dependent-issue> --base=<predecessor-issue>`
+
+default branchからの派生はtarget release trunkへ直接stackできないticketを作るため、`github-delivery` policy違反になる。作成元はcurrent expected baseでなければならない。stacked ticketではimmediate predecessor snapshot/branchとの関係を`github-delivery` / `parallel-orchestration` policyに従って決める。
 
 worktree一覧:
 
@@ -154,7 +168,7 @@ Worktrunk commandはGitHub deliveryのergonomic frontendに限定する。
 
 ```text
 wt switch release-x-y-z
--> wt switch --create <issue-number>
+-> wt switch --create <issue-number> --base=release-x-y-z
 -> implementation / commit / publish
 -> immediate Draft PR
 -> review / validation
@@ -166,6 +180,36 @@ wt switch release-x-y-z
 
 ## Fallback and recovery
 
-Worktrunkが利用できない場合はnative `git worktree`へ縮退してよい。ただしbranch naming、isolated runtime、port/state uniqueness、Draft PR lifecycle等のsemanticsは維持する。
+### Authoring
+
+Worktrunkが利用できないmutable authoring workerではnative `git worktree`へ縮退してよい。ただしbranch naming、mutable ownership、runtime state safety、Draft PR lifecycle等のapplicable semanticsは維持する。
+
+worktree自体を作れないauthoring environmentでは、同じshared checkoutへ複数workerを並行配置しない。isolated clone / sandbox / serialized ownership等、同等以上のmutable ownership guaranteeを選ぶ。
+
+### Verification-only
+
+verification-only executionはworktree fallback chainの対象ではない。immutable candidate artifactをcleanにmaterializeできれば、package / installed build / clean checkout / disposable clone / serialized singleton checkout等を利用できる。
+
+singleton checkoutを使う場合はdirty stateを暗黙に上書きせず、exclusive ownershipとbefore/after state auditを行う。validation中にsource authoringへ移行した場合はmutable worker policyへpromotionする。
 
 fresh environmentではGit refs、Issue/PR metadata、committed `.config/wt.toml`、project docsからworkflowを再構成できなければならない。user-level Worktrunk configだけに必要情報を残さない。
+
+
+## Refinement / deviation
+
+Worktrunkから外れる場合は、少なくとも次を確認する。
+
+- canonical task/source identityがlocal pathに依存しない
+- concurrent workspaceのmutable-state safetyを悪化させない
+- current expected baseからmaterializeできる
+- review/recoveryがtool-local hidden stateだけに依存しない
+- dev process / port / mutable service lifecycleについて必要なguaranteeを維持する
+
+同等以上ならalternativeを許容する。Worktrunk command shapeそのものをorganizational correctnessとして扱わない。
+
+## Remove / re-evaluate
+
+- agent/runtimeがnativeに同等以上のworkspace lifecycleを提供する
+- Worktrunk固有hookがproject stackと不整合になる
+- host worktreeを使わないruntime modelへ移行する
+- comparative evalでWorktrunk-specific instructionの追加価値が消える

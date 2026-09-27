@@ -1,9 +1,15 @@
 ---
 name: linear-release-control
-description: Linearをoptionalなrelease planning / health / portfolio control planeとして使い、GitHub Issue / PR中心のexecution stateと二重管理せずreconcileする時に使用する。
+description: current release-driven profileでLinearをrelease planning / health / portfolio Practiceとして使い、GitHub execution stateとのcanonical ownershipを保ってreconcileする時に使用する。
 ---
 
 # Linear Release Control
+
+Layer: **Practice**
+
+Linearはcurrent release-driven profileの標準release planning / health / portfolio toolであり、Constitutionではない。重要なのはLinearというsurfaceではなく、Canonical Consistencyを保ったrelease-level planning ownershipである。
+
+同等以上のportfolio/release-planning guaranteeを持つalternativeへ移行する場合はADR-0017のrefinement contractを使う。
 
 ## Use this Skill when
 
@@ -99,7 +105,7 @@ code changeのscope / acceptance criteriaはGitHub Issueへ置き、Linear Issue
 
 1. implementationはGitHub Issue / ticket PRで追跡する。
 2. LinearへPR本文・CI log・review discussionを複製しない。
-3. release判断へ影響するblockerだけProject / optional Linear Issueへ反映する。
+3. release判断へ影響するblockerだけProject / Linear Issueへ反映する。
 4. Project UpdateはGitHub actual stateを確認してから作成する。
 
 Project Updateの標準内容:
@@ -123,7 +129,7 @@ Project Updateの標準内容:
 
 Interactive PM操作ではChatGPT等のLinear connector/pluginを使用してよい。
 
-external agentがLinearへ直接アクセスする場合はLinear公式remote MCPをoptional capabilityとして使える。
+external agentがLinearへ直接アクセスする場合はLinear公式remote MCPをcapabilityとして使える。
 
 - Coordinator / release manager: `https://mcp.linear.app/mcp`
 - read-only worker: `https://mcp.linear.app/mcp/readonly`
@@ -155,3 +161,15 @@ Loopsもbaselineにしない。利用する場合はstatus summarization / notif
 Linearが利用不能でもimplementation / release integrationを止めない。
 
 GitHub Issue / PR / release branch / repository docsからcanonical execution stateを復旧し、Linear復旧後にProject stateをreconcileする。
+
+## Constitutional mapping
+
+- Canonical Consistency: GitHub execution factsとLinear release-level factsのfield ownershipを分離する
+- Evidence Integrity: release health/progressをGitHubのdurable evidenceからreconcileする
+- Organizational Continuity: release goal/date/healthを一つのagent sessionだけに保持しない
+
+## Re-evaluate / remove
+
+- release planningを別systemが同等以上に担う
+- project規模/形態がLinear control planeを不要にする
+- GitHub等がrelease-level viewを十分に提供し二重surfaceのcostが上回る

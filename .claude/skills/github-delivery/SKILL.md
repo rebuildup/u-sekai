@@ -1,9 +1,15 @@
 ---
 name: github-delivery
-description: GitHub Issues / Pull Requestsをexecutionの中心に置き、1週間のrelease sprint、dependency-aware stacked PR、durable Draft PR lifecycleでticket-drivenなdeliveryを進める時に使用する。planning control planeはGitHub Projectsまたはoptional Linear profileを使う。
+description: current release-driven Operating ModelをGitHub Issues / Pull Requestsへmaterializeし、release sprint / dependency / review / durable delivery stateを扱う時に使用する。
 ---
 
 # GitHub Delivery
+
+Layer: **Operating Model + Practice**
+
+このSkillはcurrent release-driven profileのGitHub materializationを定義する。Issue / PR / branch / Draft PR shapeそのものはConstitutionではない。
+
+重要なのは、durable implementation identity、reviewable evidence、canonical consistency、authority boundary、organizational continuityを維持すること。将来別platform/topologyがこれらを同等以上に満たす場合は置換できる。
 
 ## Source of Truth
 
@@ -11,7 +17,7 @@ description: GitHub Issues / Pull Requestsをexecutionの中心に置き、1週�
 - active sprint/release integration state: `release-x-y-z`
 - durable implementation work state: GitHub Issues
 - dependency state: GitHub Issue dependency metadata
-- release planning / portfolio state: GitHub Projects、またはLinear profile採用時はLinear Projects / Initiatives
+- release planning / health / portfolio state: Linear Projects / Initiatives
 - ticket review/integration: Pull Requests
 - transient execution state: Supervisor
 
@@ -22,18 +28,18 @@ description: GitHub Issues / Pull Requestsをexecutionの中心に置き、1週�
 
 PRのquality/readinessとmerge side effectのauthorizationを分離する。
 
-Agent / subagent / Coordinator / Supervisorは、userが対象PRまたは明確に限定したPR集合について明示的にmerge/landを依頼した場合だけ、次を実行できる。
+Agent / subagent / Coordinator / Supervisorは、userが対象PRまたは明確に限定したPR集合について明示的にmerge/landを依頼した場合だけ、landing authorization handlingまで進める。実行できる **landing role** は状況によって次の通り分岐する:
 
-- merge / squash merge / rebase merge
-- native stacked PR / contiguous stack landing
-- auto-merge有効化
-- integration targetへの直接反映等、PR mergeと実質同じlanding side effect
+- **standalone 状況（1つのPRを単独で操作する場合）**: Agent / subagent / Coordinator / Supervisor のいずれも、authorization がある対象PRに対して merge commit method (`merge`) によるPR landing / merge-commit semanticsを満たすstacked PR landing / merge methodが`merge`に固定されたauto-merge / authorization scope内のequivalent landingを実行できる。squash merge / rebase mergeはcurrent profileのPR landing methodとして使用しない。
+- **orchestrated 状況（`parallel-orchestration` の landing handoff boundary 下で shared durable integration state へ ordered landing が必要な場合）**: Coordinator / Supervisor だけが landing 操作を実行する。Agent / subagent / worker は landing を実行せず、result + authorization scope を immutable handoff artifact として Supervisor へ返す。
+
+authorization handling 自体は standalone / orchestrated のどちらの状況でも Agent / subagent が進めてよいが、landing 操作は上表の role gating に従う。
 
 次はauthorizationではない。
 
 - acceptance criteria satisfied
-- required checks green
-- approval / conversation resolution
+- applicable validation completed without known failure
+- blocking review / conversation resolution
 - mergeable / Ready for review
 - `対応して` / `レビューして` / `conflictを解消して` / `リリース準備して` / `最後まで進めて` 等の一般的な完遂依頼
 - repository policyやrelease schedule自体
@@ -42,30 +48,59 @@ authorizationがなければ、implementation / push / Draft PR / metadata / rev
 
 authorizationはidentified PR / bounded PR setとtask scopeへ限定し、別PRへ伝播させない。authorization後にexpected review fixでhead SHAが変わった場合はcurrent SHAでrequired validationを再実行する。base / target release / scope / included changes等がmaterialに変わった、unrelated changesが入った、またはauthorization scope内か曖昧になった場合は古いauthorizationを再利用せずuserへ再確認する。
 
-quality gateは「mergeしてよい品質か」を判定する。merge authorizationは「Agentがmerge操作を実行してよいか」を判定する。前者の成功から後者を導出しない。
+quality gateは「mergeしてよい品質か」を判定する。merge authorizationは「landing 操作を実行してよいか」を判定する。前者の成功から後者を導出しない。
 
-## Public repository main protection
+## Pull Request merge method
 
-public repositoryでは`main`をprotected branch / branch rulesetで必ず保護する。
+current release-driven profileでは、GitHub PR landingは **merge commit (`merge`) のみ**（ADR-0018）。repository settingsは `allow_merge_commit=true` / `allow_squash_merge=false` / `allow_rebase_merge=false` へreconcileし、権限不足なら差分をblocker/limitationとして報告する。Agent / automationはmerge APIでmethodを暗黙選択せず `merge` を明示する。
 
-最低限のinvariant:
+squash merge / rebase mergeは使用しない。branch-local `git rebase` はstack maintenance / conflict解消のbranch mechanicsとして許可する。stack landingがmerge commit semanticsを保証できない場合はordered merge-commit landingへfallbackする。method固定からauthorizationを導出しない。
+#### Orchestrated workflow landing boundary
 
-- `main`へのdirect push / direct web edit / force push / deletionを通常運用で許可しない
+`parallel-orchestration` の execution model 下では、Agent / subagent / worker は **target release integration branch (`release-x-y-z`) や `main` への shared durable integration state への ordered landing を直接実行しない**。landing は Coordinator / Supervisor が durable integration の責務として行う。
+
+Agent / subagent が merge / land authorization を受け取る経路は次のいずれかに限定する:
+
+1. 単独で `release-x-y-z -> main` の release PR を扱う状況では、authorization を **直接 landing 操作として実行できる**。
+2. 並列オーケストレーション下では、Agent / subagent の authorization は **Coordinator / Supervisor への明示的 handoff** を経由する。worker / subagent は landing を実行せず、result + authorization scope を immutable handoff artifact として Supervisor へ返す。Supervisor だけが landing 操作を行う。
+
+この境界を越えて worker / subagent が landing 操作を実行した場合、result は stale candidate として扱う。
+
+## Main protection / release-only integration
+
+GitHub上で保護機能を利用できるrepositoryでは、`main` をbranch protection / rulesetで保護する。
+
+標準baseline:
+
 - `main`変更にはPull Requestを必須とする
+- required approving review countは **0** とし、個人開発で自己approvalを要求しない
+- conversation resolutionを必須とし、未解決review conversationを残したままmergeしない
+- required status checksは **既定で設定しない**。存在しないCI/check名を推測・固定してmergeを停止させない
+- CIが存在する場合はquality evidenceとして確認するが、branch protectionの固定required checkとは分離する
+- direct push / direct web edit / force push / deletionを通常運用で許可しない
 - normal actor/adminが保護を日常的にbypassする運用を作らない
-- `main`へmerge可能な正規delivery pathは `release-x-y-z -> main` のrelease PRだけとする
-- ticket branchや任意branchから`main`へのPRを正規delivery pathとして認めない
-- required checks / review / conversation resolution等、projectで定義したrelease gateを満たしてからmergeする
+- `main`への正規delivery pathは current `release-x-y-z -> main` release PRだけとする
+- ticket branch / arbitrary branchから`main`へ向いたPRはmerge対象にしない
 
-GitHubのbranch protection/rulesetだけではPRのhead branch名を完全には制約できない場合がある。その場合は、`base == main` のPRについて `head` がcanonical `release-*` patternかつ現在のtarget releaseであることを検証するrequired status check / GitHub Action等を追加し、release branch以外からの`main` mergeを機械的に拒否する。
+GitHubの標準branch protection/rulesetではPR head branch patternを直接制約できないため、存在しないrequired status checkを捏造して補わない。source branch制約はproject policy / release automation / merge executorで検証し、`base == main` かつ `head == current release-*` でないPRのmergeを拒否する。既にrepository固有の信頼できるguardが存在する場合は利用できるが、そのcheck名を他projectへ固定継承しない。
 
-初期化時にrepository visibilityを確認し、publicなら`main` protection/rulesetの実在と有効性を検証する。設定変更権限がある場合は不足を作成・修復し、権限がない場合は未設定を明示的blockerとして報告する。
+readiness reportでは `ruleset enforced` と `merge-executor policy enforced` を区別する。外部guardがない場合、GitHub UIで任意headからのPR mergeを完全に禁止できるとは報告しない。Agentがmerge APIを呼ぶ直前には必ずbase/headを再取得してpreflightする。
+
+初期化時にrepositoryのmain protection/rulesetを実際に確認する。設定変更権限がある場合は上記baselineへ作成・修復し、権限がない場合は差分をblockerとして報告する。
 
 ## Weekly release sprint
 
 通常のsprint期間は **1週間** とする。
 
 1 sprint = 1 target semantic version = 1 release integration branchを維持する。
+
+version選択は次をdefaultとし、単に「何versionにするか」を毎回userへ聞かない。
+
+- production/stable release boundary: **major** bump
+- 通常のsprint release: **minor** bump
+- sprint内の微調整、またはそのsprint導入後の追加調整: **patch** bump
+
+external ecosystem / compatibility contract / user指定versionと衝突する場合だけ、その制約を優先して判断する。
 
 canonical format:
 
@@ -80,6 +115,18 @@ canonical format:
 release branchはsprint開始時に `main` のrelease基準commitから作成する。
 
 緊急patchや明示的なrelease判断では1週間から外れてよいが、通常planning cadenceは1週間を基準とする。patchでも`main`を直接変更せず、target patch release branch -> `main` のrelease PRを使用する。
+
+### Delivery forecast / capacity
+
+1週間はplanning cadenceであり、選んだscopeが必ず1週間で完了するというestimateではない。
+
+release / roadmap / milestoneの完了時期、release date、capacity、carry-over、agent数変更による短縮効果を判断する場合は `agent-delivery-estimation` Skillを使用する。
+
+- IssueのSizeをcalendar durationとして扱わない
+- AI自身の「数日・数ヶ月」という主観的estimateをrelease dateの根拠にしない
+- dependency graph、Work Unit、observed throughput、human review capacity、CI/external wait、usage limitを使う
+- material unknownがある場合は `complete / conditional / unavailable` を維持し、日付を捏造してfieldを埋めない
+- sprintごとの実績を次のforecast calibrationへ戻す
 
 ## Issue
 
@@ -104,51 +151,63 @@ Issueのtitle/bodyは日本語を標準とする。
 
 Issue dependency graphはcanonical dependency SoTであり、Git branch topologyだけでdependencyを表現しない。
 
-## Planning board / control plane
+## Linear planning control plane
 
-GitHub Projectsを使う場合の最低限のStatus:
+release planning / health / portfolio はLinearへ統一する。GitHub Projectsは標準運用では作成・要求・同期しない。
 
-`Backlog -> Ready -> In Progress -> In Review -> Done`
+- GitHub Issues: implementation scope / acceptance criteria / dependency の durable SoT
+- GitHub PR: review / integration / validation evidence
+- Linear Project / Initiative: release goal / target date / health / portfolio
+- Linear Issue: cross-repository blockerやexternal dependencyなどrelease-level coordinationに限定
 
-推奨field:
+GitHub IssueをLinear Issueへ全面mirrorしない。詳細は `linear-release-control` Skillに従う。
 
-- Priority
-- Size
-- Target Version
-- Area / Component
-- Blocked / dependency
-
-WIPを無制限に増やさない。
-Readyかつdependency条件を満たすticketからcapacity内で起動する。
-
-Linear profileを採用するprojectでは、GitHub IssueをLinear Issueへ全面mirrorしない。Linearはrelease-level planning / health / portfolio control planeとして使い、詳細は `linear-release-control` Skillに従う。GitHub ProjectsとLinearを併用する場合も同じfieldを両方でcanonicalにしない。
-
-Dependency execution上は必要に応じて次を区別する:
-
-- `blocked`: prerequisite snapshotがまだ利用できない
-- `stack-ready`: reviewable immutable predecessor snapshotがあり、dependent workを開始できる
-- `integrated`: ticket changesがtarget release trunkへland済み
-
-この3状態はdependency semanticsであり、Project Status自体を必ず増やす必要はない。
+Dependency execution上は必要に応じて `blocked` / `stack-ready` / `integrated` を区別するが、GitHub ProjectsのStatus fieldを前提にしない。
 
 ## Sprint / release cycle
 
-1. 次version、1週間のsprint window、release dateを決める。
+1. release intentからversion bump（production/stable=major、通常sprint=minor、微調整=patch）を決め、1週間のsprint windowを置く。release dateや中長期commitmentを置く場合は `agent-delivery-estimation` のevidence-backed forecastまたは明示的な外部deadlineと区別する。
 2. `release-x-y-z` branchを `main` から作成する。
 3. sprint goalを定義する。
 4. Ready ticketを選択する。
-5. dependency / stack候補 / capacityを確認する。
+5. dependency / stack候補 / capacityを確認する。中長期capacity判断では `agent-delivery-estimation` のcurrent evidence / bottleneck / forecast statusを参照する。
 6. ticketごとにnumber-only branchを作る。
 7. 最初のmeaningful commitをremoteへpublishし、remote head SHA一致を確認した直後にDraft PRを必ず作成し、metadataを設定する。
 8. isolated workerをdependency/WIP制約内で並行起動する。
 9. independent ticketまたはstacked ticketをreviewし、current landing candidateを検証する。
 10. ticket/stackをready-to-mergeへ持っていく。
 11. explicit merge authorizationがなければここで停止し、current head SHA / gate state / blockersを報告する。authorizationがある場合だけtarget release trunkへlandし、landing成功を確認する。
-12. target release trunkへlandしたticketのlinked Issueを明示的にcloseする。GitHub Projectsをticket boardとして使うprojectではstatusをDoneへ更新する。
-13. release branch全体を検証し、release PRをready-to-mergeへ持っていく。Linear profile採用時はGitHub evidenceからrelease Project health / updateをreconcileする。
-14. explicit release-merge authorizationがなければrelease merge前で停止する。authorizationがある場合だけrelease PRを `main` へmergeする。
-15. version/release処理を完了する。
-16. 未完了ticketは次releaseへ明示的に再計画する。
+12. target release trunkへlandしたticketのlinked Issueを明示的にcloseする。
+13. release branch全体を検証し、release PRをready-to-mergeへ持っていく。GitHub evidenceからLinear release Project health / updateをreconcileする。
+14. explicit release-merge authorizationがなければrelease merge前で停止する。authorizationがある場合だけrelease PRを `merge` methodで `main` へmergeし、merge commit / resulting `main` SHAを確認する。
+15. project-local release contractに従い、version tag / GitHub Release / package / deploy / store artifact等のpublication処理を実行する。release PR mergeだけでrelease completeとしない。
+16. publication artifactをprovider/APIから再取得し、expected version・expected release SHA・draft/prerelease state・artifact availabilityを検証する。publicationが欠落・stale・別SHAならrelease blockerとして閉じるまで継続する。
+17. 未完了ticketは次releaseへ明示的に再計画する。
+
+## Release publication invariant
+
+`release-x-y-z -> main` のrelease PR mergeはintegration完了であり、publication完了そのものではない。
+
+projectごとに「何が存在すればreleasedか」をproject-local release contractとして定義する。対象例:
+
+- semantic version tag
+- GitHub Release
+- package registry artifact
+- deploy / environment promotion
+- desktop/mobile installer・store artifact
+- checksum / provenance / attestation
+
+最低限のinvariant:
+
+- expected versionとrelease merge commit / release source SHAの対応を固定する
+- publication automationは再実行しても安全なidempotent operationにする
+- existing tag/artifactがexpected SHAと異なる場合は上書きせずfail closedする
+- merge成功を根拠にpublication成功を推定しない
+- publish command / workflow successだけで完了せず、provider/APIからartifactを再取得して実在とidentityを確認する
+- GitHub Releaseを採用するrepositoryではdraft / prerelease状態もrelease contractに含める
+- publicationが人手・権限・store review等に依存する場合は、integration complete / publication pendingを別状態として報告する
+
+post-merge verificationでpublication artifactが存在しない、expected release SHAを指さない、またはrequired artifactが利用不能ならreleaseは未完了として扱う。
 
 ## Ticket branch
 
@@ -291,7 +350,7 @@ DraftからReady for reviewへ移す条件:
 - current SHAに対するticket-level integration quality gateを実行済み
 - blocking known issueが解消済み、または明示的にscope外
 - PR description / assignee / labels / reviewer metadataが現在の実装と一致
-- required reviewerをrequest済み、または意味のあるreviewer不在を明記済み
+- required reviewerをrequest済み。meaningful reviewer不在はreview/merge semanticsへ影響する場合だけreaderに必要な形で説明し、mutable stateとして恒常的にserializeしない
 - target release branchまたはimmediate stack predecessorとのstaleness/conflictを処理済み
 - predecessor変更によるdownstream revalidationを処理済み
 
@@ -300,12 +359,11 @@ DraftからReady for reviewへ移す条件:
 IssueのDone条件:
 
 - acceptance criteria satisfied
-- required CI/checks green for current landing candidate
-- blocking review resolved
+- current landing candidateに対するapplicable project validationを実行済みで、既知の失敗を残していない
+- blocking review / conversation resolved
 - release/stack staleness handled
 - ticket changesがtarget release trunkへland済み
 - linked Issue explicitly closed after successful trunk landing
-- GitHub Projectsをticket boardとして使う場合はProject status moved to Done
 
 independent ticketでは通常のticket PR mergeがそのままtarget release trunkへのlandingになる。ただしAgentがそのmergeを実行できるのは、このPRまたは明確に限定されたPR集合へのexplicit merge authorizationがある場合だけである。authorizationがなければDoneへ進めずready-to-mergeで停止する。
 
@@ -315,7 +373,7 @@ native stacked PRでは、stackはbottom（trunkに最も近いPR）からlandin
 
 native stack landingを使えずordinary nested PRへfallbackする場合、例えば `124 -> 123` の通常mergeはintermediate integrationにすぎない。#124のchangesがtarget `release-x-y-z` へ到達するまでIssue #124をclose/Doneにしない。
 
-contiguous stack groupまたはstack全体を一括landingする場合、含まれるすべてのticketが個別にacceptance criteria / review / current-SHA validationを満たしていることを確認する。landing後に各Issueと、利用中のplanning projection（GitHub Projects等）を明示的にreconcileする。Linear profileではticketを全面mirrorしないため、release-level stateだけを必要に応じてreconcileする。
+contiguous stack groupまたはstack全体を一括landingする場合、含まれるすべてのticketが個別にacceptance criteria / review / current-SHA validationを満たしていることを確認する。landing後に各GitHub Issueを明示的にreconcileする。Linearはticketを全面mirrorしないため、release-level stateだけを必要に応じてreconcileする。
 
 `main`へのmergeをIssue単位のDone条件にはしない。Issue Done boundaryはtarget release trunkである。
 
@@ -351,7 +409,7 @@ release gate成功はrelease PRをready-to-mergeにするquality evidenceであ�
 
 release PRがmergeされた時点で `main` がそのversionのreleased source stateになる。
 
-Linear profile採用時は、release PR merge後もtag / deploy / package / store等のproject-defined actual availabilityを確認し、final Project Update / `Released` checkpointを反映してからLinear ProjectをCompletedへ進める。
+release PR merge後もtag / deploy / package / store等のproject-defined actual availabilityを確認し、final Linear Project Update / `Released` checkpointを反映してからLinear ProjectをCompletedへ進める。
 
 ## Version / tag-triggered release consistency
 
@@ -391,7 +449,7 @@ weekly release branch modelとtag releaseは競合しない。release branch/PR�
 - Coordinator/Supervisorだけがshared durable integration stateへ順序立てて統合する。
 - merge/landing前にtarget release / predecessor / current validation SHAを確認する。
 - Doneへ移す前にactual target release trunk上のlandingを確認する。
-- public repositoryでは`main` protection/rulesetとrelease-only main merge checkを初期化・検証する。
+- `main` protection/rulesetを上記baselineで初期化・検証し、merge executorはrelease-only main source invariantを確認する。
 
 ## Language policy
 
@@ -404,3 +462,17 @@ weekly release branch modelとtag releaseは競合しない。release branch/PR�
 commit format:
 
 `<work-prefix>: <extremely concise title>`
+
+
+## Refinement boundary
+
+GitHub delivery topologyを変更する場合、最低限次を維持する。
+
+- durable work identityとdependencyを別actorから再発見できる
+- integration candidateとvalidation/review evidenceを対応付けられる
+- current/released source stateのcanonical authorityが曖昧にならない
+- consequential landingのauthority boundaryが維持される
+- interrupted workをconversation historyなしでreconcileできる
+- valid workがdelivery ceremonyだけで不必要に停止しない
+
+branch名、Draft PR timing、release branch cadence等はcurrent profileのdefaultであり、上位guaranteeを満たすalternativeを一律に禁止しない。

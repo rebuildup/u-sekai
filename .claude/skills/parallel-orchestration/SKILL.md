@@ -5,11 +5,27 @@ description: 複数AIエージェントへtaskを分解・委譲し、immutable 
 
 # Parallel Orchestration
 
-非自明な実装をdependency graphへ分解し、Readyまたはstack-readyなnodeをresource/WIP制約内で最大限並行実行する。
+Layer: **Operating Model + Skill**
 
-## Invariants
+非自明な実装をdependency graphへ分解し、Readyまたはstack-readyなnodeをresource/WIP制約内で安全に並行実行する。
 
-- 1 implementation worker = 1 isolated mutable runtime。
+Constitutional requirementは「1 worker = 1 particular sandbox」ではなく **Mutable Ownership Safety / Identity Integrity / Organizational Continuity** である。current modelはisolated mutable runtime + immutable snapshot/result + fencing identity（現在はgeneration-based fencing）でこれを実現する。
+
+より強いagent/runtimeが同等以上のguaranteeを別mechanismで提供する場合は、ADR-0017のrefinement contractに従って置換できる。Worker / Supervisor のlogical roleと observational / mutable / durable attempt の分類は `organization/execution-roles.md` と ADR-0019 をcanonical sourceとする。Herdrをselected runtime Practiceとして使う場合は `herdr-runtime` Skillを適用するが、Herdr lifecycle stateをcanonical task/result stateにしない。
+
+## Attempt-class routing
+
+spawn前にroleだけでなくexecution attempt classを決める。
+
+- **observational**: research / exploration / independent review / read-only diagnostics。source/runtimeのmutable ownershipを持たない限りbranch / Draft PR / sandbox / fencing / durable checkpointを要求しない。
+- **mutable**: independent implementationやstateful execution。明示的mutable-ownership boundary、base/result identity、stale result rejectionを要求する。
+- **durable**: Issue-level / long-running / background / remote execution。mutable要件に加えてdurable discoverability、checkpoint/recovery、fencingを要求する。
+
+観測用subagentがsourceを変更し始めた場合はmutableへ、session/provider lossを越えて継続すべきworkになった場合はdurableへpromotionする。
+
+## Current operating guarantees
+
+- concurrent mutable implementation workerごとにisolated runtime、serialization、transaction等の明示的mutable-ownership boundaryを持つ。current defaultは1 worker = 1 isolated mutable runtime。
 - shared working tree / Git index / integration branchを複数workerが直接更新しない。
 - parent -> child はimmutable snapshot。
 - child -> parent はimmutable commit/ref/diff + validation result。
@@ -19,10 +35,11 @@ description: 複数AIエージェントへtaskを分解・委譲し、immutable 
 - durable planning unitはGitHub Issue、短命な内部subtaskはSupervisor taskとしてよい。
 - Issue dependency graphがdurable dependency SoTであり、Git branch topologyだけでdependencyを管理しない。
 - child lifecycleはparent model processではなくSupervisorが所有する。
-- すべてのmutable worker task/resultに `execution_generation` を必須で付与する。初期generationは `1` とし、recovery/reassignment時にSupervisorが原子的に進める。
-- result統合前にcurrent generationとの一致を検証し、stale generationを統合しない。
+- durable worker task/resultはstale attemptを排除できるfencing identityを持つ。current implementationでは `execution_generation` を使用し、初期generationは `1`、recovery/reassignment時にSupervisorが原子的に進める。
+- result統合前にapplicableなcurrent fencing identityとの一致を検証し、stale identityを統合しない。
 - validation resultはvalidated SHA/snapshotにpinし、stack rebase/update後の別SHAへ流用しない。
 - long-running task / context limit / sandbox recreationでは `agent-recovery` Skillを適用する。
+- `security-audit` のcandidate validationではhunterとverifierを同一agentにせず、fresh verifierへimmutable candidate/evidenceを渡す。final record verificationが必要なprofileでも同じseparationを維持する。
 - spawn前に `policy-evaluation` Skillのexecution profileを判定し、mechanical / localized taskへ不要なfan-outを導入しない。
 
 ## Execution profile routing
@@ -37,6 +54,25 @@ orchestration strengthはtask sizeの印象ではなくexecution profileから�
 複数profileに該当する場合はsafeguardを合成する。特に `cross-boundary` かつ `judgment-heavy` のtaskはdependency decomposition / safe parallelismとevidence/rubric-first executionの両方を適用し、combined routingをorchestration前に記録する。
 
 execution profileは `quality-gate` のverification risk taxonomyを置換しない。orchestration/review強度とtest levelを別々に決定する。
+
+## Capacity / delivery-estimation coupling
+
+scheduleやroadmapを理由にWIP / spawn数 / agent数を増減する場合は、`agent-delivery-estimation` Skillを参照する。
+
+orchestration側から少なくとも次の観測可能情報を提供する。
+
+- active agent count / WIP
+- Ready / blocked / stack-ready node数
+- task type / risk / Work Unit when calibrated
+- retry / reassignment / generation change
+- blocked duration
+- human-review queue
+- CI / integration wait
+- usage-limit / provider resource constraint
+
+agent数増加を線形speedupとみなさない。task mixやhuman/CI bottleneckが異なる期間のthroughput差をagent数の因果効果と断定しない。
+
+estimate達成のためにisolation、snapshot/result、fencing identity、WIP/resource safetyを弱めてはならない。安全なorchestration invariantはforecastより優先する。
 
 ## Dependency readiness
 
@@ -56,11 +92,11 @@ predecessorが後から変更された場合はaffected downstream task/branch�
 3. canonical Issue dependency graphからtask graphを作る。
 4. linear hard dependency segmentでstacked PRが適切かを判断する。
 5. 各nodeのinput snapshot / predecessor snapshot / output contract / recovery boundaryを決める。
-6. Supervisorがmutable taskへcurrent `execution_generation` と実行policyを割り当ててspawnする。
+6. Supervisorがdurable taskへcurrent fencing identity（current defaultでは `execution_generation`）と実行policyを割り当ててspawnする。
 7. Readyまたはstack-readyなnodeをWIP/resource制約内でspawnする。
 8. durable ticket branchをworker/subagentが作る場合、first meaningful commitをcanonical remoteへpublishし、remote head SHA一致を確認した直後にDraft PRを作成する。published commit + Draft PRなしでactive implementationを継続しない。
 9. meaningful boundaryでcheckpointする。
-10. worker resultをinspectし、result generationとbase snapshotがcurrent expected stateに一致することを確認する。
+10. worker resultをinspectし、applicableなcurrent fencing identityとbase snapshotがcurrent expected stateに一致することを確認する。
 11. Coordinator/Supervisorだけがshared durable integration stateへ順序立てて統合する。
 12. integration checkpointごとにrequired validationを行う。
 13. predecessor変更でupstack/downstream branchが更新された場合、affected validationを再実行する。
@@ -68,6 +104,8 @@ predecessorが後から変更された場合はaffected downstream task/branch�
 15. GitHub Issue / Project / PR metadataを実行状態と同期する。
 
 ## Spawn contract
+
+observational workerはobjective / scope / authority / expected evidenceの最小contractでよい。mutable workerでは次を基準とし、durable workerではfencing / recovery fieldsを必須化する。
 
 mutable workerの最低限input:
 
@@ -85,14 +123,17 @@ expected_draft_pr
 assignee_expectation
 reviewer_expectation
 label_expectation
-execution_generation
+fencing_identity_or_execution_generation
 role
+attempt_class
 allowed_tools
 filesystem_policy
 network_policy
 budget
 expected_result
 ```
+
+durable workerでは上記に加えて、`recovery_boundary`、durable checkpoint/evidence reference、durable discoverability metadataを必須とする。resume/recovery時は`checkpoint_sha_or_snapshot`も必須とする。
 
 dependency / durable GitHub deliveryを使わない短命taskでは該当しないfieldはnull/omittedでよい。
 
@@ -120,6 +161,8 @@ Ephemeral immutable ref/resultはこのcontractの対象外。
 
 ## Result contract
 
+observational resultはsource mutationを含まず、evidence provenanceと対象artifact identityを返す。mutable/durable workerは次を基準とする。
+
 mutable workerの最低限output:
 
 ```text
@@ -128,7 +171,8 @@ issue_or_task_id
 target_release
 base_snapshot
 predecessor_snapshot
-execution_generation
+fencing_identity_or_execution_generation
+attempt_class
 result_commit_or_ref
 draft_pr_identity
 summary
@@ -136,9 +180,28 @@ validation_results
 known_issues
 ```
 
-current `execution_generation` と一致しないresultは自動統合しない。
+durable workerでは上記に加えて、`checkpoint_sha_or_snapshot`、`status`、`completed_steps`、`next_steps`、`pending_validation`、`external_side_effects`、`artifact_refs`、`updated_at`を含むrecovery handoffを必須とする。GitHub/branch deliveryの場合はpublished remote head、Draft PR identity、Issue/branch metadataも必須とする。
+
+applicableなcurrent fencing identity（current implementationでは `execution_generation`）と一致しないresultは自動統合しない。
 
 recorded predecessor/base snapshotとcurrent expected baseが異なるresultはstale candidateとしてreconcileし、盲目的に統合しない。
+
+## Landing handoff boundary
+
+worker / subagent の **shared durable integration state への ordered landing**（`release-x-y-z` への merge / landing、`release-x-y-z -> main` release PR の merge、`main` への直接反映等）は **Coordinator / Supervisor だけが実行する**。
+
+- worker / subagent は target release trunk / `main` への merge / landing 操作を実行しない。
+- worker / subagent は Draft PR 作成・remote publication・branch head verify までを完了して、result identity + Draft PR identity + validation evidence + known issues を immutable handoff artifact として Supervisor へ返す。
+- Coordinator / Supervisor は landing 順序、再validation、target release trunk への merge / contiguous stack landing のみを実行できる。
+
+user explicit merge / land authorization を Agent / subagent が受け取った場合でも、orchestrated workflow 下では landing 操作は **Coordinator / Supervisor 経由でのみ** 実行する。worker / subagent は landing を実行せず、authorization scope を伴った immutable handoff を Supervisor へ渡す。
+
+この境界を越えて worker / subagent が landing 操作を実行した場合:
+
+- 直近 landing は stale candidate として扱う。
+- 自動rollback は前提としない。integration state への影響と reconciliation 必要性を Supervisor が reassess し、必要なら new landing 候補で再実行する。
+
+単独で `release-x-y-z -> main` release PR を扱う状況ではこの限りではない。worker が release PR の merge authorization を直接 landing 操作として実行できる。
 
 ## Review handoff
 
@@ -160,7 +223,7 @@ review後にhead SHAが変わった場合、古いapproval/validationがcurrent 
 
 parent agentが停止してもsafeなchildを自動破棄しない。
 
-recovered CoordinatorはSupervisorからchildを再発見し、running/completed/failed/orphanedをreconcileする。completed resultはimmutable snapshot/result relationship、predecessor/base identity、current generationを確認してから統合する。
+recovered CoordinatorはSupervisorからchildを再発見し、running/completed/failed/orphanedをreconcileする。completed resultはimmutable snapshot/result relationship、predecessor/base identity、applicableなcurrent fencing identityを確認してから統合する。
 
 GitHub上のIssue/PR/branch metadataはdurable recovery evidenceであり、active durable ticket branchにpublished remote head + Draft PRがない状態を正常状態として扱わない。zero-diff release branchはDraft release PR invariantの例外だが、first meaningful integrated difference後はDraft release PRを必須とする。
 
@@ -169,3 +232,17 @@ GitHub上のIssue/PR/branch metadataはdurable recovery evidenceであり、acti
 true isolationが使えない場合、shared mutable workspaceで並列実装しない。read-only researchの並列化または安全な直列実装へ縮退する。
 
 stacked PRを安全に維持できない場合もdependency SoTを壊さず、predecessor merge後に通常ticketとして開始する直列workflowへ縮退する。
+
+
+## Organizational outcome checks
+
+orchestrationのqualityはfan-out数や特定Supervisor APIではなく、次のoutcomeで確認する。
+
+- concurrent workersが互いのmutable stateを無調停に破壊しない
+- task / attempt / result identityをretry/recovery後も取り違えない
+- completed resultのevidenceがcurrent artifactへbindされる
+- parent/worker loss後もdurable stateからreconcileできる
+- dependency/authorityを無視して速さだけを最大化しない
+- orchestration overheadがtask価値を上回る場合はsolo executionへ縮退できる
+
+current Supervisor / execution_generation / Worktrunk shapeはこれらを満たす現在のimplementationであり、永続的なAPI contractではない。

@@ -7,6 +7,8 @@ description: framework/runtime/dependencyの脆弱性情報を収集し、projec
 
 security updateは単純なCVSS順ではなく、projectへの実到達可能性とrelease riskまで含めて優先順位を付ける。
 
+未知のsource vulnerability探索は `security-audit` が所有する。そこで `confirmed` になったfindingは本Skillへhandoffし、advisoryと同じproject-aware priority / remediation / release workflowへ統合する。`needs_validation` をconfirmed vulnerabilityとしてpriority化しない。
+
 ## 1. Source priority
 
 初期化時および継続maintenance時に、実際に使用しているversionを基準に次を確認する。

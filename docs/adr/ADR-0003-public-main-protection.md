@@ -6,8 +6,8 @@
 
 ## Context
 
-u-sekai is a **public** GitHub repository. The pinned upstream policy
-([`rebuildup/project-init@release-0-1-1`](https://github.com/rebuildup/project-init/tree/release-0-1-1))
+u-sekai is a **public** GitHub repository. The governance baseline
+([`rebuildup/project-init@release-0-3-0`](https://github.com/rebuildup/project-init/tree/release-0-3-0))
 mandates that, in public repositories:
 
 - `main` must be protected via branch protection / ruleset.
@@ -90,4 +90,4 @@ Operational:
 - [`.github/CODEOWNERS`](../../.github/CODEOWNERS)
 - [`CONTRIBUTING.md`](../../CONTRIBUTING.md) — branch / PR / release workflow
 - [`CLAUDE.md`](../../CLAUDE.md) — Section 6 branch / release policy
-- Upstream: <https://github.com/rebuildup/project-init/tree/release-0-1-1>
+- Upstream: <https://github.com/rebuildup/project-init/tree/release-0-3-0>

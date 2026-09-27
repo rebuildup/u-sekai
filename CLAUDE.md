@@ -10,6 +10,12 @@
 
 ---
 
+## 0. Constitution / operating profile
+
+- Top-level organizational contract: [`constitution/CONSTITUTION.md`](./constitution/CONSTITUTION.md).
+- Current operating profile: [`organization/profiles/release-driven-solo.md`](./organization/profiles/release-driven-solo.md).
+- This file remains the project-specific dispatcher. Upstream procedures are replaceable Practices; explicit u-sekai decisions may deviate only while preserving the Constitution.
+
 ## 1. Project identity / boundaries
 
 - **Project name**: u-sekai
@@ -29,7 +35,8 @@ See [`README.md`](./README.md) and [`CONTRIBUTING.md`](./CONTRIBUTING.md) for de
 | Task dependencies | GitHub Issue dependency graph |
 | Long-lived design decisions | `docs/adr/`(not yet created; first ADR lands when a decision is finalized) |
 | Draft research questions | `docs/research-issues/` |
-| Pinned reference policy source | `.tmp/project-init/` at `release-0-1-1` (SHA `48432a73...`); see [`docs/rebuildup-pin.md`](./docs/rebuildup-pin.md) |
+| Governance baseline | `.tmp/project-init/` at `release-0-3-0` (SHA `57fb4a2e...`); see [`docs/rebuildup-pin.md`](./docs/rebuildup-pin.md) |
+| Agent Skills source | current `rebuildup/project-init`, managed by `bunx skills` + `skills-lock.json` |
 
 Conversation history, native session IDs, agent-private memory, local shell history — **none of these are SoT**.
 
@@ -53,7 +60,7 @@ Conversation history, native session IDs, agent-private memory, local shell hist
 
 Resolve decisions in this order:
 
-1. **project-wide policy / canonical architecture / invariant**(this file / `CONTRIBUTING.md` / `docs/adr/` when present / pinned [`rebuildup/project-init@release-0-1-1`](./docs/rebuildup-pin.md))
+1. **project-wide policy / canonical architecture / invariant**(this file / `CONTRIBUTING.md` / `docs/adr/` when present / `rebuildup/project-init@release-0-3-0` governance baseline plus current project-local Skills)
 2. **design / specification / explicit task instruction**(Issue body / user instruction)
 3. **coherent existing implementation majority**(currently a minority in this repo)
 4. **current official framework / runtime / SDK guidance**(applies once language is decided)
@@ -90,9 +97,9 @@ When asking, investigate discoverable facts first and present options, impact, a
 - Issue dependency graph is the canonical dependency SoT.
 - Independent ticket PRs target the release branch.
 - Same-release linear hard dependencies may use the immediate predecessor ticket branch as PR base.
-- After public-repo enablement, the **only** canonical path to `main` is `release-x-y-z -> main` release PR.
+- The **only** canonical path to `main` is `release-x-y-z -> main` release PR.
+- PR landing uses merge commits only. Squash merge and rebase merge are not used.
 
-> Note: this repository has not yet enabled `main` protection or the release workflow. When it does, this file and `CONTRIBUTING.md` will be updated in the same change.
 
 ### Merge authorization vs. PR readiness (mandatory)
 
@@ -108,7 +115,7 @@ This rule applies to all AI agents touching this repository.
 
 ## 7. Language policy (u-sekai override)
 
-The pinned upstream policy defaults internal docs / Issues / PRs to Japanese. u-sekai **overrides** that because the project is internationally oriented (Product Hunt and similar channels).
+The project-init governance baseline defaults internal docs / Issues / PRs to Japanese. u-sekai **overrides** that because the project is internationally oriented (Product Hunt and similar channels).
 
 | Concern | Language |
 | --- | --- |
@@ -122,13 +129,13 @@ The pinned upstream policy defaults internal docs / Issues / PRs to Japanese. u-
 
 If a contributor prefers Japanese for a specific file, that is fine locally but should not block international review.
 
-> The Skills under `.claude/skills/` are currently kept in Japanese because they are direct copies from the pinned upstream `rebuildup/project-init@release-0-1-1` source. Translating them risks semantic drift relative to the pinned reference. Translation is tracked as a follow-up research issue (R-09 in [`docs/research-issues/README.md`](./docs/research-issues/README.md)) and is **not** part of this init commit.
+> The Skills under `.claude/skills/` are kept in Japanese because they track upstream-authored Skills verbatim. They are updated from current `rebuildup/project-init` through `bunx skills`; the governance baseline does not freeze Skill content. Translation remains tracked in R-09.
 
 ## 8. Skill discovery
 
 This file plus the relevant Skill under `.claude/skills/` are the only documents to read for a normal task. Do not re-read the upstream `PROMPT.*.md` files from `.tmp/project-init/` on every task — they are reference material, not per-task context.
 
-All 14 Skills from the pinned upstream source are installed under `.claude/skills/`. Load only the Skills relevant to the current task.
+Project-init Skills are managed from the current upstream source. Canonical project paths are `.agents/skills/` plus `.claude/skills/` for Claude Code. Load only the Skills relevant to the current task.
 
 | Skill | Purpose |
 | --- | --- |
@@ -145,9 +152,14 @@ All 14 Skills from the pinned upstream source are installed under `.claude/skill
 | `policy-evaluation` | Execution profile, deterministic/latent policy eval, blind comparative evaluation, context budget |
 | `security-maintenance` | Framework/runtime vulnerability intake / triage / remediation |
 | `onboarding` | Fresh contributor / fresh agent onboarding, repository-controlled knowledge design |
+| `agent-delivery-estimation` | Evidence-based delivery forecasting from work units, dependencies, throughput, and constraints |
+| `correctness-assurance` | Select the minimum sufficient correctness assurance from invariants, static/runtime checks, tests, differential/property/formal methods |
+| `herdr-runtime` | Optional Herdr Supervisor/session Practice and recovery boundaries |
+| `secrets-management` | CLI-first secret authority, self-hosted Infisical default, least privilege, migration, and recovery |
+| `security-audit` | Coverage-led source security auditing with independent verification |
 | `agent-recovery` | Session / sandbox / context interruption recovery |
 
-The Skills are written in Japanese (see Section 7 for the rationale). When reconciling with upstream, compare against `.tmp/project-init/skills/`.
+The Skills are written in Japanese (see Section 7 for the rationale). When reconciling Skills, use `skills-lock.json` and `bunx skills update -p -y`; `.tmp/project-init/` is governance-reference material, not the Skill update source.
 
 Do **not** introduce CI workflow / formatter / lint / type-check / `Containerfile` / `.py` script until the implementation language is decided and implementation artifacts exist.
 
@@ -162,7 +174,7 @@ Do **not** introduce CI workflow / formatter / lint / type-check / `Containerfil
 
 ## 10. Idempotent reconciliation
 
-This file / Skills / templates / Issue configuration is **idempotent reconciliation**. Do not regenerate correct state; only update what differs. When updating a Skill, verify the canonical source under `.tmp/project-init/skills/` and reconcile if the pinned ref has changed.
+This file / templates / Issue configuration is **idempotent reconciliation**. For Skills, use the Skills CLI: `mise run skills-bootstrap` on fresh setup and `mise run skills-update` for continuous updates. Do not use the governance baseline clone as a Skill freeze.
 
 ---
 
