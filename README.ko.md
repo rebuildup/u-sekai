@@ -5,6 +5,7 @@
 > 이 문서는 [README.md](./README.md)의 한국어 번역입니다. 프로젝트 사양과 상태의 canonical source는 영어 README입니다. 내용이 다를 경우 영어판을 우선합니다.
 
 [![CI](https://github.com/rebuildup/u-sekai/actions/workflows/ci.yml/badge.svg)](https://github.com/rebuildup/u-sekai/actions/workflows/ci.yml)
+[![Browser smoke](https://github.com/rebuildup/u-sekai/actions/workflows/browser-smoke.yml/badge.svg)](https://github.com/rebuildup/u-sekai/actions/workflows/browser-smoke.yml)
 [![Version](https://img.shields.io/github/package-json/v/rebuildup/u-sekai?branch=main&label=version)](https://github.com/rebuildup/u-sekai/blob/main/package.json)
 [![License](https://img.shields.io/github/license/rebuildup/u-sekai)](./LICENSE)
 [![Node.js](https://img.shields.io/badge/Node.js-%3E%3D20-339933?logo=node.js&logoColor=white)](https://nodejs.org/)
@@ -73,6 +74,22 @@ ls runs
 
 `demo-`로 시작하는 디렉터리가 만들어지고 그 안에 `manifest.json`, `events.ndjson`, `observations/`, `self-report/`, `observer-report.json`, `result.json`, `summary.md`가 생성됩니다.
 
+### Browser path (실제 Chromium)
+
+위 run은 결정적 HTTP 경로이며 브라우저가 필요하지 않습니다. 동일한 파이프라인으로 실제 Chromium을 구동하려면 브라우저 런타임을 한 번 설치한 뒤 browser gate와 CLI를 실행합니다.
+
+```bash
+npx playwright install --with-deps chromium
+npm run test:browser
+node dist/cli/index.js run test/fixtures/experiment.task-tracker.browser.json \
+  --adapter playwright \
+  --reasoner scripted \
+  --observer-reasoner scripted \
+  --out runs
+```
+
+browser suite는 의도적으로 `npm test`에서 **제외**되어 있습니다. 기본 gate를 빠르게 유지하고 브라우저가 없는 환경에서도 동작하도록 하기 위함입니다. 런타임 요구 사항, artifact 레이아웃, 호스트에 Chromium 시스템 라이브러리가 없을 때의 해결 방법은 [`docs/browser-runtime.md`](./docs/browser-runtime.md)를 참고하세요.
+
 ### Live smoke (실제 모델)
 
 기본 scripted reasoner는 API key가 필요하지 않습니다. 실제 provider를 사용할 때:
@@ -87,6 +104,8 @@ node dist/cli/index.js run test/fixtures/experiment.task-tracker.json \
 ```
 
 CLI는 API key를 artifact에 저장하지 않습니다. 자세한 내용은 ADR-0005를 참고하세요.
+
+live provider 경로는 어떤 자동 gate도 다루지 않으며, 0.2.0 개발 기간 동안 **실행되지 않았습니다**(사용 가능한 API key가 없었기 때문입니다). 그 동작에 대해 어떤 주장도 하지 않습니다.
 
 ### CLI
 
@@ -111,15 +130,20 @@ Flags (run):
 | 2 | adapter / provider runtime error |
 | 3 | participant run 중 capability violation |
 
+Reasoner의 structured-output 실패가 재시도 가능하지만 소진된 경우, participant는 `reasonerFailure`로 종료될 수도 있습니다. 이는 `reasoner.failure` evidence event로 기록되며 `capabilityViolation`과 의도적으로 **구분**됩니다. provider 결함이 participant의 capability 결함으로 보고되는 일이 없기 때문입니다(ADR-0008 참고). 종료 코드 3에 대응하는 것은 실제 `capabilityViolation`뿐이며, `reasonerFailure`만으로는 종료 코드 0을 유지합니다.
+
 ### Quality gate
 
 ```bash
 npm run lint
 npm run typecheck
 npm run test
+npm run test:browser
 npm run build
 npm run ci
 ```
+
+`npm run test:browser`는 `npm test`에도 `npm run ci`에도 **포함되지 않습니다**. Playwright Chromium 설치(`npx playwright install --with-deps chromium`)가 필요하므로, 기본 gate는 빠르고 브라우저 비의존 상태로 유지됩니다. [`docs/browser-runtime.md`](./docs/browser-runtime.md)를 참고하세요.
 
 CI에는 외부 LLM API key가 필요하지 않습니다.
 
@@ -128,6 +152,8 @@ CI에는 외부 LLM API key가 필요하지 않습니다.
 `package.json#version`이 canonical release version입니다. CLI와 run artifact가 이 값을 직접 읽고, CI는 release branch 이름이 이 값과 일치하는지 검사합니다. README의 version badge도 GitHub의 같은 필드를 읽습니다.
 
 `npm run version:check`으로 package-lock과 release branch 정합성을 검증할 수 있습니다.
+
+`release-x-y-z -> main` 병합 이후, 같은 필드가 release identity가 됩니다. `npm run release:publish`가 release commit에 `v<version>` 태그를 만들고 대응하는 GitHub Release를 생성합니다. [`docs/release-process.md`](./docs/release-process.md)를 참고하세요.
 
 ---
 
@@ -255,7 +281,8 @@ cli/                     entry point (u-sekai <cmd>)
 ## 현재 제한 / non-goals
 
 - real-user calibration, generative benchmark, baseline-vs-candidate scoring, universal UX score, accessibility simulation, 고급 cognitive / forgetting model, 자동 persona generation, multi-provider matrix, desktop / mobile, GUI dashboard, Firecracker / Kubernetes / distributed execution, 대규모 병렬 population execution은 의도적으로 후속 작업으로 미룹니다.
-- real Playwright + real LLM은 구현되어 있지만 CI에는 포함되지 않습니다. CI는 scripted reasoner + HTTP adapter를 사용하며 실제 모델 검증은 manual live-smoke workflow로 수행합니다.
+- real LLM은 어떤 자동 gate의 범위에도 포함되지 않습니다. `ci.yml`과 `browser-smoke.yml`은 모두 결정적 scripted reasoner를 사용하며, 실제 모델 검증은 manual live-smoke workflow로 수행합니다. 0.2.0 개발 기간 중에는 사용 가능한 API key가 없어 live provider 경로가 검증되지 않았습니다.
+- real Playwright는 gate를 갖지만 별도의 workflow가 담당합니다. `ci.yml`은 HTTP만 실행해 기본 gate가 브라우저 비의존 상태로 유지되도록 하고, 실제 Chromium gate는 `browser-smoke.yml`이 담당합니다. [`docs/browser-runtime.md`](./docs/browser-runtime.md)를 참고하세요.
 - deterministic E2E는 Node의 localhost port allocation과 demo HTTP server에 의존합니다. 테스트 파일 간 port collision을 피하기 위해 Vitest의 `pool: 'forks'`를 사용합니다.
 
 ## Contributing
