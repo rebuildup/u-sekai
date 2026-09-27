@@ -164,6 +164,17 @@ function failuresOf(events: ReadonlyArray<RunEvent>): ReasonerFailureEvent[] {
   return events.filter((e): e is ReasonerFailureEvent => e.type === 'reasoner.failure');
 }
 
+/**
+ * `reasonerFailures` is optional on the evidence type so that older producers
+ * stay assignable, but the runner always populates it. Narrowing here keeps
+ * that guarantee asserted rather than assumed.
+ */
+function evidenceFailures(result: RunResult): NonNullable<RunResult['evidence']['reasonerFailures']> {
+  const failures = result.evidence.reasonerFailures;
+  expect(failures, 'run evidence must carry reasonerFailures').toBeDefined();
+  return failures as NonNullable<RunResult['evidence']['reasonerFailures']>;
+}
+
 describe('structured-output recovery: full run artifact', () => {
   it('recovers from a malformed turn, continues the run, and records no capability violation', async () => {
     const out = await runWithPlan('malformed-then-valid');
@@ -197,8 +208,8 @@ describe('structured-output recovery: full run artifact', () => {
 
     // No reasoner failure is folded into the capability-violation channel.
     expect(out.result.evidence.runtimeErrors).toEqual([]);
-    expect(out.result.evidence.reasonerFailures).toHaveLength(failures.length);
-    expect(out.result.evidence.reasonerFailures[0]).toMatchObject({
+    expect(evidenceFailures(out.result)).toHaveLength(failures.length);
+    expect(evidenceFailures(out.result)[0]).toMatchObject({
       channel: 'participant',
       outputKind: 'action',
       failureKind: 'providerParse',
@@ -245,8 +256,8 @@ describe('structured-output recovery: full run artifact', () => {
     expect(out.result.observer.findings).toHaveLength(1);
 
     // The run's real failure mode is diagnosable from result.json alone.
-    expect(out.result.evidence.reasonerFailures.length).toBeGreaterThanOrEqual(4);
-    expect(new Set(out.result.evidence.reasonerFailures.map((f) => f.failureKind))).toEqual(new Set(['providerParse']));
+    expect(evidenceFailures(out.result).length).toBeGreaterThanOrEqual(4);
+    expect(new Set(evidenceFailures(out.result).map((f) => f.failureKind))).toEqual(new Set(['providerParse']));
   });
 
   it('classifies a structurally invalid action as contractValidation end to end', async () => {
@@ -260,7 +271,7 @@ describe('structured-output recovery: full run artifact', () => {
     );
     expect(participantFailures).toHaveLength(4);
     expect(participantFailures.every((f) => f.failureKind === 'contractValidation')).toBe(true);
-    expect(new Set(out.result.evidence.reasonerFailures.map((f) => f.failureKind))).toEqual(
+    expect(new Set(evidenceFailures(out.result).map((f) => f.failureKind))).toEqual(
       new Set(['contractValidation']),
     );
   });

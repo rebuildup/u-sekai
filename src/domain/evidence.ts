@@ -229,8 +229,13 @@ export interface BehavioralEvidence {
   readonly navigationsByParticipant: Record<string, ReadonlyArray<{ step: number; from: string; to: string }>>;
   /** Runtime-enforced capability violations. Provider defects live in `reasonerFailures`. */
   readonly runtimeErrors: ReadonlyArray<{ ts: string; where: string; message: string }>;
-  /** Structured Reasoner failures, including recovered ones. */
-  readonly reasonerFailures: ReadonlyArray<ReasonerFailureEvidence>;
+  /**
+   * Structured Reasoner failures, including recovered ones. Always populated
+   * by the experiment runner, so a run produced by this version always carries
+   * it; optional only so that older producers of this evidence type stay
+   * assignable. See ADR-0008.
+   */
+  readonly reasonerFailures?: ReadonlyArray<ReasonerFailureEvidence>;
   readonly terminationReasonByParticipant: Record<string, TerminationReason>;
   readonly participantConfigurations: ReadonlyArray<{
     participantId: string;
