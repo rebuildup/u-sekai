@@ -3,42 +3,103 @@
  *
  * - Reads `ANTHROPIC_API_KEY` from process.env at construction time.
  * - Translates u-sekai's ReasonerRequest -> Anthropic Messages JSON.
- * - Parses back to a ReasonerResponse. JSON-mode (action / selfReport /
- *   observerFindings) via system prompt framing + JSON parsing of the
- *   assistant text.
+ * - Converts the assistant text into a typed `ReasonerResponse` through
+ *   the structured-output boundary (`src/reasoner/structured.ts`), which
+ *   owns the failure taxonomy and contract validation (ADR-0008).
+ *
+ * This adapter never interprets a malformed payload as a capability
+ * problem, never persists HTTP headers, and never returns unbounded model
+ * text: diagnostics are redacted and hard-capped.
  *
  * Default model: claude-3-5-sonnet-latest.
  */
 
-import type { Reasoner, ReasonerRequest, ReasonerResponse } from '../../domain/reasoner.js';
+import type {
+  Reasoner,
+  ReasonerCompletionOptions,
+  ReasonerRequest,
+  ReasonerResponse,
+} from '../../domain/reasoner.js';
 import type { ReasonerConfig } from '../../domain/experiment.js';
-import type { ParticipantAction } from '../../domain/capability.js';
-import { ProviderError } from '../../domain/errors.js';
+import { ProviderError, StructuredOutputError } from '../../domain/errors.js';
+import {
+  detectStructuredOutputKind,
+  excerptForDiagnostics,
+  parseStructuredOutput,
+  type StructuredOutputKind,
+} from '../structured.js';
 
 const DEFAULT_MODEL = 'claude-3-5-sonnet-latest';
-const DEFAULT_ENDPOINT = 'https://api.anthropic.com/v1/messages';
+const DEFAULT_BASE_URL = 'https://api.anthropic.com';
 const ANTHROPIC_VERSION = '2023-06-01';
 const ENV_KEY = 'ANTHROPIC_API_KEY';
 const ENV_BASE_URL = 'ANTHROPIC_BASE_URL';
 
+/** A fetch-compatible transport. Injectable so tests never touch the network. */
+export type AnthropicFetch = (input: string, init: RequestInit) => Promise<Response>;
+
+const defaultTransport: AnthropicFetch = (input, init) => fetch(input, init);
+
+interface AnthropicMessagesBody {
+  readonly content?: Array<{ type: string; text?: string }>;
+  readonly usage?: { input_tokens?: number; output_tokens?: number };
+}
+
+export interface AnthropicReasonerDeps {
+  /**
+   * Explicit credential. Intended for tests and for embedding hosts that
+   * already hold the key; never write the value into an artifact.
+   */
+  readonly apiKey?: string;
+  /** API base URL; the adapter appends `/v1/messages`. */
+  readonly baseUrl?: string;
+  /** Transport seam. Defaults to the global `fetch`. */
+  readonly fetch?: AnthropicFetch;
+}
+
 export function anthropicReasoner(
   config: ReasonerConfig,
   _ctx: { participantLabel?: string; role: 'participant' | 'observer' | 'selfReport' },
+  deps: AnthropicReasonerDeps = {},
 ): Reasoner {
-  const apiKey = process.env[ENV_KEY];
+  const apiKey = deps.apiKey ?? process.env[ENV_KEY];
   if (!apiKey) {
     throw new ProviderError(
       `${ENV_KEY} is not set; required when reasoner.provider === 'anthropic'.`,
       'anthropic',
     );
   }
-  const baseUrl = process.env[ENV_BASE_URL] ?? DEFAULT_ENDPOINT;
+  const baseUrl = deps.baseUrl ?? process.env[ENV_BASE_URL] ?? DEFAULT_BASE_URL;
   const endpoint = baseUrl.replace(/\/+$/, '') + '/v1/messages';
-  const modelId = config.modelId ?? DEFAULT_MODEL;
+  return createAnthropicReasoner({
+    apiKey,
+    endpoint,
+    modelId: config.modelId ?? DEFAULT_MODEL,
+    ...(config.seed !== undefined ? { seed: config.seed } : {}),
+    ...(deps.fetch !== undefined ? { fetchImpl: deps.fetch } : {}),
+  });
+}
+
+export interface AnthropicReasonerOptions {
+  readonly apiKey: string;
+  readonly endpoint: string;
+  readonly modelId: string;
+  readonly seed?: string;
+  readonly fetchImpl?: AnthropicFetch;
+}
+
+/**
+ * Build a Reasoner from explicit options. `createAnthropicReasoner` is the
+ * hermetic seam: a test can construct a fully deterministic Reasoner with a
+ * stub transport and no real credential in source.
+ */
+export function createAnthropicReasoner(opts: AnthropicReasonerOptions): Reasoner {
+  const { apiKey, endpoint, modelId } = opts;
   return {
     providerId: 'anthropic',
     modelId,
-    complete: async (request) => invokeAnthropic(request, modelId, apiKey, endpoint, config.seed),
+    complete: async (request, completion) =>
+      invokeAnthropic(request, modelId, apiKey, endpoint, opts.seed, completion, opts),
   };
 }
 
@@ -48,7 +109,12 @@ async function invokeAnthropic(
   apiKey: string,
   endpoint: string,
   seed: string | undefined,
+  completion: ReasonerCompletionOptions | undefined,
+  options: AnthropicReasonerOptions,
 ): Promise<ReasonerResponse> {
+  const outputKind = detectStructuredOutputKind(request.systemPrompt);
+  const base = { provider: 'anthropic', modelId, outputKind } as const;
+
   const body = {
     model: modelId,
     max_tokens: request.maxTokens,
@@ -59,9 +125,10 @@ async function invokeAnthropic(
     ...(seed !== undefined ? { metadata: { user_id: `usekai:${seed}` } } : {}),
   } as Record<string, unknown>;
 
+  const transport = opts_fetch(options);
   let response: Response;
   try {
-    response = await fetch(endpoint, {
+    response = await transport(endpoint, {
       method: 'POST',
       headers: {
         'content-type': 'application/json',
@@ -69,22 +136,49 @@ async function invokeAnthropic(
         'anthropic-version': ANTHROPIC_VERSION,
       },
       body: JSON.stringify(body),
+      ...(completion?.signal !== undefined ? { signal: completion.signal } : {}),
     });
   } catch (err) {
-    throw new ProviderError(`network error: ${(err as Error).message}`, 'anthropic');
+    if (isAbort(err)) {
+      throw new StructuredOutputError(
+        'anthropic request exceeded the per-attempt deadline',
+        'providerTransport',
+        { ...base, timeout: true },
+      );
+    }
+    throw new StructuredOutputError(
+      `anthropic network error: ${excerptForDiagnostics((err as Error).message)}`,
+      'providerTransport',
+      { ...base },
+    );
   }
 
   if (!response.ok) {
-    const text = await response.text();
-    throw new ProviderError(`anthropic http ${response.status}: ${text.slice(0, 500)}`, 'anthropic', {
-      status: response.status,
-    });
+    // The response body is kept only as a short redacted excerpt: a
+    // provider error body can echo request content, and the boundary must
+    // never persist unbounded text.
+    const text = await response.text().catch(() => '');
+    throw new StructuredOutputError(
+      `anthropic http ${response.status}`,
+      'providerTransport',
+      {
+        ...base,
+        status: response.status,
+        ...(text ? { excerpt: excerptForDiagnostics(text) } : {}),
+      },
+    );
   }
 
-  const json = (await response.json()) as {
-    content?: Array<{ type: string; text?: string }>;
-    usage?: { input_tokens?: number; output_tokens?: number };
-  };
+  let json: AnthropicMessagesBody;
+  try {
+    json = (await response.json()) as AnthropicMessagesBody;
+  } catch (err) {
+    throw new StructuredOutputError(
+      `anthropic response body was not JSON: ${excerptForDiagnostics((err as Error).message)}`,
+      'providerParse',
+      { ...base },
+    );
+  }
 
   const text = (json.content ?? [])
     .filter((b) => b.type === 'text')
@@ -96,81 +190,27 @@ async function invokeAnthropic(
     outputTokens: json.usage?.output_tokens ?? 0,
   };
 
-  return parseAnthropicText(text, request.systemPrompt, usage);
-}
-
-function parseAnthropicText(
-  text: string,
-  systemPrompt: string,
-  usage: { inputTokens: number; outputTokens: number },
-): ReasonerResponse {
-  // The system prompt tells the model whether to emit action /
-  // selfReport / observerFindings. We detect which by prompt markers,
-  // not by content.
-  if (/Emit a JSON object matching the SelfReport shape/.test(systemPrompt)) {
-    return {
-      kind: 'selfReport',
-      content: safeJson(text),
-      usage,
-    };
-  }
-  if (/Produce an ObserverFindings JSON object/.test(systemPrompt)) {
-    return {
-      kind: 'observerFindings',
-      content: safeJson(text),
-      usage,
-    };
-  }
-  // Default: action.
-  let action: Record<string, unknown>;
-  try {
-    action = safeJson(text);
-  } catch (err) {
-    return {
-      kind: 'refusal',
-      message: `unparseable assistant output: ${(err as Error).message}; raw=${text.slice(0, 200)}`,
-      usage,
-    };
-  }
-  if (!action || typeof action !== 'object' || typeof action.kind !== 'string') {
-    return {
-      kind: 'refusal',
-      message: `assistant did not emit a recognisable action; raw=${text.slice(0, 200)}`,
-      usage,
-    };
-  }
-  const typedAction = action as unknown as ParticipantAction;
-  return {
-    kind: 'action',
-    action: typedAction,
-    rationale: text.slice(0, 200),
+  return parseStructuredOutput(outputKind, text, {
+    ...base,
     usage,
-  };
+    rationale: excerptForDiagnostics(text),
+  });
 }
 
-function safeJson(text: string): Record<string, unknown> {
-  // Try the whole string first; fall back to the first JSON object.
-  const trimmed = text.trim();
-  try {
-    const v = JSON.parse(trimmed);
-    if (typeof v === 'object' && v !== null && !Array.isArray(v)) {
-      return v as Record<string, unknown>;
-    }
-  } catch {
-    /* fall through */
-  }
-  const match = trimmed.match(/\{[\s\S]*\}/);
-  if (match) {
-    try {
-      const v = JSON.parse(match[0]);
-      if (typeof v === 'object' && v !== null && !Array.isArray(v)) {
-        return v as Record<string, unknown>;
-      }
-    } catch {
-      /* fall through */
-    }
-  }
-  throw new Error('no JSON object found in assistant output');
+function opts_fetch(options: AnthropicReasonerOptions): AnthropicFetch {
+  return options.fetchImpl ?? defaultTransport;
 }
 
-export const __testHelpers = { safeJson };
+function isAbort(err: unknown): boolean {
+  return (
+    typeof err === 'object' &&
+    err !== null &&
+    ((err as { name?: unknown }).name === 'AbortError' ||
+      (err as { name?: unknown }).name === 'TimeoutError')
+  );
+}
+
+/** Explicitly re-exported so the boundary contract stays discoverable. */
+export type { StructuredOutputKind };
+
+export const __testHelpers = { ANTHROPIC_VERSION, DEFAULT_BASE_URL };

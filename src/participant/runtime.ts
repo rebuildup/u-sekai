@@ -1,12 +1,12 @@
 /**
- * Participant runtime (ADR-0006). Single-step inner loop:
+ * Participant runtime (ADR-0006, ADR-0008). Single-step inner loop:
  *
  *   1. adapter.open(url)
  *   2. for step in [0, budget):
  *        a. observer = adapter.observe(step)
  *        b. participantObs = applyParticipantObservation(observer, capability)
  *        c. request = buildReasonerRequest(...)
- *        d. reasoner.complete(request)
+ *        d. completeStructuredWithRecovery(request)  <- typed taxonomy + bounded retry
  *        e. action = result.action ; enforceActionAllowlist(...)
  *        f. result  = adapter.execute(action)
  *        g. recorder.append(...)
@@ -15,6 +15,11 @@
  *
  * The participant runtime NEVER sees the observer observation's DOM /
  * console / network — only the filtered participant view.
+ *
+ * A malformed or contract-violating Reasoner response is recorded as a
+ * typed `reasoner.failure`, never as a `capability.violation`. Only a
+ * parsed action that attempts a privileged primitive produces a
+ * `capability.violation`.
  */
 
 import type { BrowserAdapter } from '../adapter/browser/interface.js';
@@ -27,10 +32,12 @@ import type { SelfReport } from '../domain/self-report.js';
 import type {
   EvidenceRecorder,
 } from '../evidence/recorder.js';
+import type { TerminationReason } from '../domain/evidence.js';
 import {
   applyParticipantObservation,
   assertNoPrivilegedLeak,
   enforceActionAllowlist,
+  enforceRawAttempt,
   buildReasonerRequest,
   memoryWindowDescription,
 } from '../capability/index.js';
@@ -40,7 +47,15 @@ import {
   participantSelfReportSystemPrompt,
 } from './system-prompt.js';
 import { fnv1aHex } from '../evidence/hash.js';
-import { isParticipantAction } from '../domain/capability.js';
+import {
+  admitParticipantAction,
+  assertReasonerResponseContract,
+  completeStructuredWithRecovery,
+  requireSelfReportContent,
+  resolveStructuredOutputPolicy,
+  type StructuredAttemptFailure,
+  type StructuredOutputPolicy,
+} from '../reasoner/structured.js';
 
 export interface ParticipantRuntimeOptions {
   readonly runId: string;
@@ -57,17 +72,53 @@ export interface ParticipantRuntimeOptions {
   readonly onStepObservation?: (obs: import('../domain/observation.js').ParticipantObservation) => Promise<void>;
   /** Optional seed used for digest determinism. */
   readonly seed?: string;
+  /**
+   * Overrides the structured-output recovery policy (ADR-0008). Defaults
+   * to 2 attempts with parse/contract/transient-transport retry.
+   */
+  readonly structuredOutputPolicy?: Partial<StructuredOutputPolicy>;
 }
 
 export interface ParticipantRuntimeResult {
   readonly steps: number;
   readonly selfReport: SelfReport;
-  readonly terminationReason:
-    | 'finish'
-    | 'stepBudgetExceeded'
-    | 'capabilityViolation'
-    | 'error';
+  readonly terminationReason: TerminationReason;
   readonly error?: string;
+}
+
+/**
+ * Record every failed structured-output attempt. The event carries
+ * `recoveryOutcome`, so retry-success and retry-exhaustion are
+ * distinguishable from `events.ndjson` alone.
+ */
+async function recordReasonerFailures(
+  recorder: EvidenceRecorder,
+  runId: string,
+  participantId: string,
+  stepIndex: number | null,
+  failures: ReadonlyArray<StructuredAttemptFailure>,
+): Promise<void> {
+  for (const f of failures) {
+    await recorder.append({
+      type: 'reasoner.failure',
+      runId,
+      ts: f.ts,
+      outputKind: f.outputKind,
+      channel: f.channel,
+      failureKind: f.failureKind,
+      provider: f.provider,
+      modelId: f.modelId,
+      attempt: f.attempt,
+      maxAttempts: f.maxAttempts,
+      retryable: f.retryable,
+      willRetry: f.willRetry,
+      recoveryOutcome: f.recoveryOutcome,
+      message: f.message,
+      ...(stepIndex !== null ? { participantId, stepIndex } : {}),
+      ...(f.httpStatus !== undefined ? { httpStatus: f.httpStatus } : {}),
+      ...(f.excerpt !== undefined ? { excerpt: f.excerpt } : {}),
+    });
+  }
 }
 
 export async function runParticipant(opts: ParticipantRuntimeOptions): Promise<ParticipantRuntimeResult> {
@@ -83,6 +134,8 @@ export async function runParticipant(opts: ParticipantRuntimeOptions): Promise<P
     budget,
     recorder,
   } = opts;
+
+  const policy = resolveStructuredOutputPolicy(opts.structuredOutputPolicy);
 
   await adapter.open(targetUrl);
 
@@ -172,7 +225,44 @@ export async function runParticipant(opts: ParticipantRuntimeOptions): Promise<P
         },
       });
 
-      const reasonerResponse = await reasoner.complete(outcome.request);
+      const recovery = await completeStructuredWithRecovery({
+        reasoner,
+        request: outcome.request,
+        expectedKind: 'action',
+        policy,
+        validate: (response, outputKind) => {
+          assertReasonerResponseContract(response, outputKind, {
+            provider: reasoner.providerId,
+            modelId: reasoner.modelId,
+          });
+        },
+      });
+
+      await recordReasonerFailures(recorder, runId, participantId, stepIndex, recovery.failures);
+
+      if (recovery.status === 'failed') {
+        // A provider / protocol defect, exhausted or not retryable. This
+        // is deliberately NOT a capability violation.
+        terminationReason = recovery.failureKind === 'capabilityViolation' ? 'capabilityViolation' : 'reasonerFailure';
+        lastError =
+          recovery.failureKind === 'capabilityViolation'
+            ? 'reasoner emitted a privileged action attempt'
+            : `reasoner structured-output failure (${recovery.failureKind}) after ${recovery.attempts} attempt(s)`;
+        if (recovery.failureKind === 'capabilityViolation') {
+          await recorder.append({
+            type: 'capability.violation',
+            runId,
+            participantId,
+            stepIndex,
+            ts: new Date().toISOString(),
+            axis: 'action',
+            reason: lastError,
+          });
+        }
+        break;
+      }
+
+      const reasonerResponse = recovery.value;
 
       await recorder.append({
         type: 'reasoner.response',
@@ -183,59 +273,46 @@ export async function runParticipant(opts: ParticipantRuntimeOptions): Promise<P
         response: reasonerResponse,
       });
 
-      if (reasonerResponse.kind === 'refusal') {
-        // Recover by waiting one step.
-        const fallback: ParticipantAction = { kind: 'wait', milliseconds: 250 };
-        await recorder.append({
-          type: 'action',
-          runId,
-          participantId,
-          stepIndex,
-          ts: new Date().toISOString(),
-          action: fallback,
-        });
-        const ar = await adapter.execute(fallback);
-        await recorder.append({
-          type: 'action.result',
-          runId,
-          participantId,
-          stepIndex,
-          ts: new Date().toISOString(),
-          result: ar,
-        });
-        steps += 1;
-        continue;
-      }
-
       if (reasonerResponse.kind !== 'action') {
-        lastError = `unexpected reasoner response kind: ${reasonerResponse.kind}`;
-        await recorder.append({
-          type: 'capability.violation',
-          runId,
-          participantId,
-          stepIndex,
-          ts: new Date().toISOString(),
-          axis: 'action',
-          reason: lastError,
-        });
-        terminationReason = 'error';
+        // Type-narrowing guard. The boundary contract check above already
+        // classifies any non-action response — including a `refusal` — as
+        // `contractValidation`, so this is not a reachable path.
+        lastError = `reasoner returned "${reasonerResponse.kind}" where an action was required`;
+        terminationReason = 'reasonerFailure';
         break;
       }
 
-      const action = reasonerResponse.action;
-      if (!isParticipantAction(action)) {
-        await recorder.append({
-          type: 'capability.violation',
-          runId,
-          participantId,
-          stepIndex,
-          ts: new Date().toISOString(),
-          axis: 'action',
-          reason: 'non-participant action shape',
-        });
+      // Three-way admission. Only a recognised privileged primitive is a
+      // capability violation; anything else structurally wrong is a
+      // contract defect.
+      const admission = admitParticipantAction(reasonerResponse.action);
+      if (admission.status === 'capabilityViolation') {
+        try {
+          enforceRawAttempt(admission.attempt);
+        } catch (err) {
+          if (err instanceof CapabilityViolation) {
+            await recorder.append({
+              type: 'capability.violation',
+              runId,
+              participantId,
+              stepIndex,
+              ts: new Date().toISOString(),
+              axis: err.axis,
+              reason: err.message,
+            });
+            lastError = err.message;
+          }
+        }
         terminationReason = 'capabilityViolation';
         break;
       }
+      if (admission.status === 'contractInvalid') {
+        lastError = `reasoner contract validation failure: ${admission.reason}`;
+        terminationReason = 'reasonerFailure';
+        break;
+      }
+
+      const action: ParticipantAction = admission.action;
 
       // Enforce action allowlist at the runtime layer.
       try {
@@ -309,11 +386,11 @@ export async function runParticipant(opts: ParticipantRuntimeOptions): Promise<P
       runId,
       participantId,
       ts: new Date().toISOString(),
-      reason: terminationReason === 'finish' ? 'finish' : terminationReason === 'capabilityViolation' ? 'capabilityViolation' : 'error',
+      reason: terminationReason,
     });
   }
 
-  const selfReport = await generateSelfReport(opts, recorder, reasoner);
+  const selfReport = await generateSelfReport(opts, recorder, reasoner, policy);
 
   await adapter.close();
 
@@ -329,6 +406,7 @@ async function generateSelfReport(
   opts: ParticipantRuntimeOptions,
   recorder: EvidenceRecorder,
   reasoner: Reasoner,
+  policy: StructuredOutputPolicy,
 ): Promise<SelfReport> {
   const { runId, participantId, personaPrompt, userStory, capability, seed } = opts;
   const selfReportSystemPrompt = participantSelfReportSystemPrompt();
@@ -351,13 +429,30 @@ async function generateSelfReport(
     promptDigest,
   });
 
-  const response = await reasoner.complete({
-    systemPrompt: selfReportSystemPrompt,
-    messages,
-    maxTokens: 384,
+  const recovery = await completeStructuredWithRecovery({
+    reasoner,
+    request: {
+      systemPrompt: selfReportSystemPrompt,
+      messages,
+      maxTokens: 384,
+    },
+    expectedKind: 'selfReport',
+    policy,
+    validate: (response, outputKind) => {
+      assertReasonerResponseContract(response, outputKind, {
+        provider: reasoner.providerId,
+        modelId: reasoner.modelId,
+      });
+    },
   });
-  if (response.kind !== 'selfReport') {
-    return {
+
+  await recordReasonerFailures(recorder, runId, participantId, null, recovery.failures);
+
+  if (recovery.status === 'failed') {
+    // The placeholder is self-describing on purpose: a reader must be
+    // able to tell a provider/contract failure apart from a participant
+    // that chose to say nothing.
+    const report: SelfReport = {
       participantId,
       capturedAt: new Date().toISOString(),
       goal: '',
@@ -366,21 +461,35 @@ async function generateSelfReport(
       resultAlignedWithExpectation: false,
       confidence: 0,
       wouldReturn: false,
-      freeText: 'selfReport unavailable',
+      freeText:
+        `self-report unavailable: reasoner ${recovery.failureKind} failure after ` +
+        `${recovery.attempts} attempt(s). This is a provider/contract failure, not participant silence.`,
     };
+    await recorder.append({
+      type: 'selfReport.response',
+      runId,
+      participantId,
+      ts: new Date().toISOString(),
+      report,
+    });
+    return report;
   }
 
-  const content = response.content;
+  const content = requireSelfReportContent(recovery.value, {
+    provider: reasoner.providerId,
+    modelId: reasoner.modelId,
+  });
+
   const report: SelfReport = {
     participantId,
     capturedAt: new Date().toISOString(),
-    goal: stringField(content.goal),
-    productUnderstanding: stringField(content.productUnderstanding),
-    confusionPoints: stringArrayField(content.confusionPoints),
-    resultAlignedWithExpectation: Boolean(content.resultAlignedWithExpectation),
-    confidence: clamp01(numberField(content.confidence)),
-    wouldReturn: Boolean(content.wouldReturn),
-    freeText: stringField(content.freeText),
+    goal: content.goal,
+    productUnderstanding: content.productUnderstanding,
+    confusionPoints: content.confusionPoints,
+    resultAlignedWithExpectation: content.resultAlignedWithExpectation,
+    confidence: content.confidence,
+    wouldReturn: content.wouldReturn,
+    freeText: content.freeText,
   };
 
   await recorder.append({
@@ -435,24 +544,4 @@ function buildSelfReportMessages(
       content: lines.join('\n'),
     },
   ];
-}
-
-function stringField(v: unknown): string {
-  return typeof v === 'string' ? v : '';
-}
-
-function stringArrayField(v: unknown): string[] {
-  if (!Array.isArray(v)) return [];
-  return v.filter((x): x is string => typeof x === 'string');
-}
-
-function numberField(v: unknown): number {
-  return typeof v === 'number' && Number.isFinite(v) ? v : 0;
-}
-
-function clamp01(n: number): number {
-  if (Number.isNaN(n)) return 0;
-  if (n < 0) return 0;
-  if (n > 1) return 1;
-  return n;
 }

@@ -50,5 +50,15 @@ type ParticipantActionT = ParticipantAction;
 export interface Reasoner {
   readonly providerId: string;
   readonly modelId: string;
-  complete(request: ReasonerRequest): Promise<ReasonerResponse>;
+  complete(request: ReasonerRequest, options?: ReasonerCompletionOptions): Promise<ReasonerResponse>;
+}
+
+/**
+ * Per-call controls handed to a Reasoner implementation. `signal` lets
+ * the structured-output boundary enforce its per-attempt wall-clock
+ * ceiling (ADR-0008) without putting a cancellation object into the
+ * persisted `reasoner.request` payload.
+ */
+export interface ReasonerCompletionOptions {
+  readonly signal?: AbortSignal;
 }
