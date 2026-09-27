@@ -85,7 +85,8 @@ Key rules:
   surfaces the same data as `reasonerFailures`.
 - Diagnostics are bounded and credential-free: excerpts are capped at
   200 characters with credential shapes redacted, and no HTTP header,
-  request body, or API key is ever persisted.
+  request body, or API key is ever persisted. Redaction is tuned so a
+  message can still name the offending field.
 
 ## Artifact layout (ADR-0007)
 

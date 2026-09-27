@@ -337,6 +337,10 @@ describe('participant runtime: retry exhaustion (Issue case 6)', () => {
     expect(selfReportFailures.map((f) => f.failureKind)).toEqual(['contractValidation', 'contractValidation']);
     expect(selfReportFailures.every((f) => f.outputKind === 'selfReport')).toBe(true);
     expect(selfReportFailures.every((f) => f.recoveryOutcome === 'exhausted')).toBe(true);
+    // A self-report failure has no step, but must still be attributable to
+    // a participant in a multi-participant run.
+    expect(selfReportFailures.every((f) => f.participantId === 'p1')).toBe(true);
+    expect(selfReportFailures.every((f) => f.stepIndex === undefined)).toBe(true);
     expect(out.result.selfReport.freeText).toContain('contractValidation');
     expect(out.result.selfReport.freeText).toContain('not participant silence');
     expect(out.events.some((e) => e.type === 'capability.violation')).toBe(false);

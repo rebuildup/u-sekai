@@ -195,6 +195,17 @@ describe('anthropic provider: transport failures', () => {
     expect(err.detail.excerpt).toContain('truncated');
   });
 
+  it('classifies a non-Error rejection as providerTransport instead of masking it with a TypeError', async () => {
+    // The transport is injectable, so a rejection is not guaranteed to be
+    // an Error. Reading `.message` off a string would throw a TypeError
+    // from inside the boundary and hide the real cause.
+    const reasoner = makeReasoner(async () => {
+      throw 'socket hang up';
+    });
+    const err = await expectStructured(reasoner, 'providerTransport');
+    expect(err.message).toContain('socket hang up');
+  });
+
   it('forwards the completion signal to the transport', async () => {
     const controller = new AbortController();
     let seen: AbortSignal | null = null;

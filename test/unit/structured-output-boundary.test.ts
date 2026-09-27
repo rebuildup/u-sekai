@@ -9,6 +9,7 @@ import { describe, it, expect } from 'vitest';
 import {
   admitParticipantAction,
   assertReasonerResponseContract,
+  boundedInternalMessage,
   classifyStructuredFailure,
   detectStructuredOutputKind,
   excerptForDiagnostics,
@@ -33,6 +34,7 @@ import {
   type StructuredFailureKind,
   type StructuredOutputFailureDetail,
 } from '../../src/domain/errors.js';
+import { isPrivilegedActionAttempt } from '../../src/domain/capability.js';
 import { participantActionSystemPrompt, participantSelfReportSystemPrompt } from '../../src/participant/system-prompt.js';
 import { observerSystemPrompt } from '../../src/observer/system-prompt.js';
 import type { ReasonerResponse } from '../../src/domain/reasoner.js';
@@ -119,6 +121,30 @@ describe('structured output: bounded, redacted diagnostics', () => {
     const excerpt = excerptForDiagnostics('rejected: A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8');
     expect(excerpt).not.toContain('A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8');
   });
+
+  it('redacts a labelled credential even when the token is short', () => {
+    const excerpt = excerptForDiagnostics('Authorization: Bearer abc123def456');
+    expect(excerpt).not.toContain('abc123def456');
+    expect(excerpt).toContain('Authorization=[redacted]');
+  });
+
+  it('redacts a quoted JSON credential field with a short value', () => {
+    const excerpt = excerptForDiagnostics('{"error":{"api_key":"short1"}}');
+    expect(excerpt).not.toContain('short1');
+    expect(excerpt).toContain('[redacted]');
+  });
+
+  it('keeps a long camelCase field name readable so the artifact stays diagnosable', () => {
+    const excerpt = excerptForDiagnostics(
+      'selfReport: "resultAlignedWithExpectation" must be a boolean',
+    );
+    expect(excerpt).toContain('resultAlignedWithExpectation');
+  });
+
+  it('keeps hyphenated boundary wording readable', () => {
+    expect(boundedInternalMessage('structured-output recovery wall-clock budget exhausted'))
+      .toContain('structured-output recovery wall-clock budget exhausted');
+  });
 });
 
 describe('structured output: action contract', () => {
@@ -168,13 +194,24 @@ describe('structured output: action contract', () => {
   );
 
   it('still classifies a privileged kind as a violation when its payload is malformed', () => {
-    let caught: unknown;
-    try {
-      validateActionContent({ kind: 'getDomTree', payload: 'not-an-object' }, CTX);
-    } catch (err) {
-      caught = err;
+    for (const payload of [{ kind: 'getDomTree', payload: 'not-an-object' }, { kind: 'readInternalMetadata' }]) {
+      let caught: unknown;
+      try {
+        validateActionContent(payload, CTX);
+      } catch (err) {
+        caught = err;
+      }
+      // A recognised privileged `kind` is a violation regardless of how
+      // broken its payload is: the intent is unambiguous.
+      expect(caught).toBeInstanceOf(CapabilityViolation);
     }
-    expect(caught).toBeInstanceOf(CapabilityViolation);
+  });
+
+  it('keeps isPrivilegedActionAttempt type-sound by requiring an object payload', () => {
+    expect(isPrivilegedActionAttempt({ kind: 'evaluateJs', payload: { code: 'x' } })).toBe(true);
+    expect(isPrivilegedActionAttempt({ kind: 'evaluateJs', payload: 'x' })).toBe(false);
+    expect(isPrivilegedActionAttempt({ kind: 'evaluateJs' })).toBe(false);
+    expect(isPrivilegedActionAttempt({ kind: 'clickByCoords', x: 1, y: 2 })).toBe(false);
   });
 });
 

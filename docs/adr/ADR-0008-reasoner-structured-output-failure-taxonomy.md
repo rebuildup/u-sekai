@@ -141,12 +141,22 @@ attempts, explicitly not participant silence, and still writes a
 No HTTP header, request body, or API key is ever persisted. A provider
 error body is kept only as an excerpt capped at 200 characters, with
 control characters stripped and credential shapes redacted: labelled
-fields (`x-api-key: …`, `authorization: …`), `sk-…` keys,
-`Bearer`/`Basic` tokens, hyphen/underscore-joined opaque tokens of key
-length, and long unbroken alphanumerics. Provider errors therefore
-cannot echo a credential into the artifact. The API key is still read
-only from `process.env`, or from an explicit injection point used by
-tests.
+fields (`x-api-key: …`, `authorization: …`, including an optional
+`Bearer`/`Basic` scheme and a quoted JSON key such as `"api_key":"…"`),
+`sk-…` keys, `Bearer`/`Basic` tokens, hyphen/underscore-joined opaque
+tokens of key length, and long unbroken alphanumerics containing a digit.
+Provider errors therefore cannot echo a credential into the artifact.
+
+Redaction thresholds are chosen so a redacted excerpt stays diagnosable:
+an ordinary hyphenated phrase and a long camelCase field name such as
+`resultAlignedWithExpectation` must survive, because the purpose of the
+message is to name the offending field. Messages the boundary authors
+itself are bounded but not credential-scrubbed, for the same reason: they
+cannot contain a credential, and scrubbing them would only remove
+information.
+
+The API key is still read only from `process.env`, or from an explicit
+injection point used by tests.
 
 ## Consequences
 
@@ -209,8 +219,8 @@ Operational:
 
 ## References
 
-- [Issue #24](../../.github/../issues/24)
-- [Issue #23](../../.github/../issues/23)
+- [Issue #24](https://github.com/rebuildup/u-sekai/issues/24)
+- [Issue #23](https://github.com/rebuildup/u-sekai/issues/23)
 - [`ADR-0005`](ADR-0005-llm-http-only-no-sdk-lock-in.md) — HTTP-only
   provider boundary.
 - [`ADR-0006`](ADR-0006-capability-model-observation-action-memory.md) —

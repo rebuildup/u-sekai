@@ -114,7 +114,11 @@ async function recordReasonerFailures(
       willRetry: f.willRetry,
       recoveryOutcome: f.recoveryOutcome,
       message: f.message,
-      ...(stepIndex !== null ? { participantId, stepIndex } : {}),
+      // `participantId` is always recorded: a self-report failure has no
+      // step, but it still has to be attributable in a multi-participant
+      // run.
+      participantId,
+      ...(stepIndex !== null ? { stepIndex } : {}),
       ...(f.httpStatus !== undefined ? { httpStatus: f.httpStatus } : {}),
       ...(f.excerpt !== undefined ? { excerpt: f.excerpt } : {}),
     });

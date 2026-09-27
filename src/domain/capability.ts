@@ -104,15 +104,16 @@ export function isPrivilegedActionKind(value: unknown): value is PrivilegedActio
  * privileged primitive. This is the only shape that justifies a
  * `capabilityViolation`: an unknown or structurally broken `kind` is a
  * contract problem, not a capability one (ADR-0008).
+ *
+ * The guard is type-sound: a value with no `payload`, or with a
+ * non-object `payload`, is not a `PrivilegedActionAttempt` and is left to
+ * `validateActionContent` to reject as a contract violation.
  */
 export function isPrivilegedActionAttempt(value: unknown): value is PrivilegedActionAttempt {
   if (typeof value !== 'object' || value === null) return false;
   const v = value as { kind?: unknown; payload?: unknown };
   if (!isPrivilegedActionKind(v.kind)) return false;
   const payload = v.payload;
-  if (payload === undefined) {
-    return true;
-  }
   if (typeof payload !== 'object' || payload === null || Array.isArray(payload)) return false;
   return true;
 }

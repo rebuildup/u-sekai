@@ -101,38 +101,61 @@ const REDACTED = '[redacted]';
  *
  * Order matters: the labelled forms are matched first so a diagnostic
  * keeps the field name it came from.
+ *
+ * Thresholds are chosen so that a redacted excerpt stays diagnosable: an
+ * ordinary hyphenated English phrase (`structured-output`) and a long
+ * camelCase field name (`resultAlignedWithExpectation`) must survive,
+ * while a key-shaped token must not. Keys are opaque, so they virtually
+ * always contain a digit or a separator — that is the discriminator.
  */
 const CREDENTIAL_PATTERNS: ReadonlyArray<RegExp> = [
-  // `x-api-key: …`, `authorization: …`, `api_key=…`, `password: …`, …
-  /((?:x-)?api[-_]?key|authorization|secret[-_]?key|access[-_]?token|auth[-_]?token|password|passwd)\s*[:=]\s*"?[^\s",;}]+/gi,
+  // `x-api-key: …`, `authorization: Bearer …`, `"api_key":"…"`,
+  // `api_key=…`, `password: …`. An optional closing quote lets a JSON
+  // body match, and an optional auth scheme lets the whole
+  // `Bearer <token>` pair be consumed in one pass — otherwise a short
+  // token would survive after its label was already stripped.
+  /((?:x-)?api[-_]?key|authorization|secret[-_]?key|access[-_]?token|auth[-_]?token|password|passwd)"?\s*[:=]\s*"?(?:(?:Bearer|Basic)\s+)?[^\s",;}]+/gi,
   // `sk-…` style provider keys.
   /\bsk-[A-Za-z0-9_-]{6,}/g,
-  // `Bearer <token>` / `Basic <token>`.
+  // `Bearer <token>` / `Basic <token>` with no label in front.
   /\b(?:Bearer|Basic)\s+[A-Za-z0-9._~+/-]{6,}=*/gi,
-  // Opaque hyphen/underscore-joined tokens of key length. Prose words are
-  // never 16+ characters long and never joined by `-`/`_`, so ordinary
-  // diagnostic text survives while an unlabelled key does not.
-  /\b(?=[A-Za-z0-9_-]*[-_])[A-Za-z0-9_-]{16,}\b/g,
-  // Long unbroken alphanumerics: base64/hex digests and raw tokens.
-  /\b[A-Za-z0-9]{24,}\b/g,
+  // Opaque hyphen/underscore-joined tokens of key length. A hyphenated
+  // English phrase is rarely this long, so ordinary diagnostic wording
+  // survives while an unlabelled key does not.
+  /\b(?=[A-Za-z0-9_-]*[-_])[A-Za-z0-9_-]{20,}\b/g,
+  // Long unbroken alphanumerics containing a digit: base64/hex digests
+  // and raw tokens. Requiring a digit keeps a long camelCase field name
+  // readable, which is the point of a diagnostic.
+  /\b(?=[A-Za-z0-9]*\d)[A-Za-z0-9]{24,}\b/g,
 ];
 
 /**
- * Produce a short, redacted, control-character-free excerpt suitable for
- * an event payload or an error message. Never returns unbounded text.
+ * Collapse whitespace, strip control characters, and cap the length.
+ * This is the bound applied to messages the boundary authors itself; no
+ * credential can be in them, so redaction would only destroy the
+ * diagnostic.
+ */
+export function boundedInternalMessage(text: string): string {
+  const collapsed = text.replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, ' ').replace(/\s+/g, ' ').trim();
+  if (collapsed.length <= EXCERPT_MAX_LENGTH) return collapsed;
+  return `${collapsed.slice(0, EXCERPT_MAX_LENGTH)}…[truncated ${collapsed.length - EXCERPT_MAX_LENGTH} chars]`;
+}
+
+/**
+ * Produce a short, redacted, control-character-free excerpt of
+ * *provider-derived* text, suitable for an event payload or an error
+ * message. Never returns unbounded text, and never returns a credential.
  */
 export function excerptForDiagnostics(text: string): string {
   const withoutControls = text.replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, ' ');
   const redacted = CREDENTIAL_PATTERNS.reduce(
     (acc, pattern) => acc.replace(pattern, (match) => {
-      const label = /^([A-Za-z_-]+)\s*[:=]/.exec(match);
+      const label = /^([A-Za-z_-]+)"?\s*[:=]/.exec(match);
       return label ? `${label[1]}=${REDACTED}` : REDACTED;
     }),
     withoutControls,
   );
-  const collapsed = redacted.replace(/\s+/g, ' ').trim();
-  if (collapsed.length <= EXCERPT_MAX_LENGTH) return collapsed;
-  return `${collapsed.slice(0, EXCERPT_MAX_LENGTH)}…[truncated ${collapsed.length - EXCERPT_MAX_LENGTH} chars]`;
+  return boundedInternalMessage(redacted);
 }
 
 // ---------------------------------------------------------------------------
@@ -840,7 +863,9 @@ export async function runWithStructuredOutputRecovery<T>(
         retryable,
         willRetry,
         recoveryOutcome: 'exhausted',
-        message: excerptForDiagnostics(classification.message),
+        // The boundary authored this message; bound it but keep the
+        // offending field name readable.
+        message: boundedInternalMessage(classification.message),
         ...(typeof detail.status === 'number' ? { httpStatus: detail.status } : {}),
         ...(detail.excerpt !== undefined ? { excerpt: detail.excerpt } : {}),
         ts: new Date().toISOString(),
@@ -871,7 +896,7 @@ export async function runWithStructuredOutputRecovery<T>(
       retryable: false,
       willRetry: false,
       recoveryOutcome: 'exhausted',
-      message: excerptForDiagnostics(lastError instanceof Error ? lastError.message : 'recovery aborted'),
+      message: boundedInternalMessage(lastError instanceof Error ? lastError.message : 'recovery aborted'),
       ts: new Date().toISOString(),
     });
   }

@@ -147,7 +147,7 @@ async function invokeAnthropic(
       );
     }
     throw new StructuredOutputError(
-      `anthropic network error: ${excerptForDiagnostics((err as Error).message)}`,
+      `anthropic network error: ${excerptForDiagnostics(errorText(err))}`,
       'providerTransport',
       { ...base },
     );
@@ -174,7 +174,7 @@ async function invokeAnthropic(
     json = (await response.json()) as AnthropicMessagesBody;
   } catch (err) {
     throw new StructuredOutputError(
-      `anthropic response body was not JSON: ${excerptForDiagnostics((err as Error).message)}`,
+      `anthropic response body was not JSON: ${excerptForDiagnostics(errorText(err))}`,
       'providerParse',
       { ...base },
     );
@@ -199,6 +199,15 @@ async function invokeAnthropic(
 
 function opts_fetch(options: AnthropicReasonerOptions): AnthropicFetch {
   return options.fetchImpl ?? defaultTransport;
+}
+
+/**
+ * The transport is injectable, so a rejection is not guaranteed to be
+ * an `Error`. Reading `.message` off a non-Error would yield `undefined`
+ * and throw a `TypeError` from inside the boundary, hiding the real cause.
+ */
+function errorText(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
 }
 
 function isAbort(err: unknown): boolean {
