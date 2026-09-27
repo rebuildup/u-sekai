@@ -8,6 +8,146 @@
  * Policy: **fail, never correct.** Each check reports what was expected next to
  * what was observed, and a violation never rewrites anything to make a
  * publication succeed.
+ *
+ * The types below are declared with JSDoc so that `tsc --checkJs` derives them
+ * from this implementation. There is deliberately no hand-written declaration
+ * file next to it: a parallel `.d.mts` can drift from the `.mjs` silently and
+ * widen the gate while every test stays green (ADR-0010).
+ */
+
+/**
+ * A check run on the target commit, reduced to what the gate decides from.
+ *
+ * @typedef {object} CheckRun
+ * @property {string} name Check-run name as reported by the GitHub Checks API.
+ * @property {string} status e.g. `completed`, `in_progress`, `queued`, `pending`.
+ * @property {string | null} conclusion e.g. `success`, `failure`, `neutral`, or `null` while running.
+ * @property {string | null} [headBranch] Head branch of the owning check suite; `null` when unknown.
+ * @property {string | null} [startedAt]
+ * @property {string | null} [completedAt]
+ * @property {string | number | null} [id]
+ * @property {string | null} [url]
+ */
+
+/**
+ * The release commit resolved from `main` history for one version.
+ *
+ * @typedef {object} ExpectedReleaseSha
+ * @property {string | null} sha Newest qualifying merge commit; `null` when there is none.
+ * @property {string | null} subject Merge-commit subject of that commit.
+ * @property {number} candidates How many merge commits qualify.
+ * @property {readonly string[]} candidateShas Every qualifying merge commit, newest first.
+ */
+
+/** @typedef {{ sha: string }} ExistingTag */
+
+/**
+ * @typedef {object} ExistingRelease
+ * @property {string} sha Commit the release ships, resolved from the tag it references.
+ * @property {string | null} [targetCommitish] Raw `target_commitish`, kept for the printed note.
+ * @property {boolean} draft
+ * @property {boolean} prerelease
+ */
+
+/**
+ * Whether this run attempted the branch-protection cross-check at all.
+ *
+ * `'not-performed'` is the CI default: `GITHUB_TOKEN` cannot read branch
+ * protection, so an unanswered request there is reported as *not performed*
+ * rather than as the fact "nothing is required".
+ *
+ * @typedef {'performed' | 'not-performed'} ProtectionCheck
+ */
+
+/**
+ * @typedef {object} ReleaseEvaluationInput
+ * @property {string} repo `owner/name` of the GitHub repository.
+ * @property {string} sourceRef Ref the version source of truth was read from.
+ * @property {string} sourceSha Commit `sourceRef` resolves to.
+ * @property {string} mainRef Ref that holds the released source state.
+ * @property {string} packageVersion Value read from `package.json#version`.
+ * @property {string} tagName Tag to publish.
+ * @property {string} releaseBranch Intended release branch.
+ * @property {string} targetSha Resolved target commit.
+ * @property {ExpectedReleaseSha} expectedReleaseSha
+ * @property {boolean} remoteHasTargetSha
+ * @property {readonly string[]} remoteContainingRefs Remote-tracking refs that contain the target commit.
+ * @property {boolean} targetOnMain
+ * @property {boolean} releaseBranchExists
+ * @property {string | null} releaseBranchTip
+ * @property {boolean | null} releaseBranchTipIsAncestor
+ * @property {readonly string[]} requiredChecks Check names that must be `completed` / `success`.
+ * @property {string} [gateSource] Where `requiredChecks` came from, for the printed verdict.
+ * @property {ProtectionCheck} protectionCheck
+ * @property {readonly string[] | null} protectionContexts Status checks registered on `main`; `null` when unreadable.
+ * @property {boolean} requireProtectionConfigured Refuse when the protected branch registers no required check.
+ * @property {boolean} checkRunsReadable False when the check runs could not be read at all.
+ * @property {readonly CheckRun[]} [checkRuns]
+ * @property {readonly string[]} applicableBranches Branches whose check runs form the release state.
+ * @property {ExistingTag | null} existingTag
+ * @property {ExistingRelease | null} existingRelease
+ * @property {boolean} conflictingReleaseTagsReadable False when Releases or tags could not be listed completely.
+ * @property {readonly string[]} conflictingReleaseTags Other Releases carrying the same version.
+ * @property {readonly string[]} conflictingTagRefs Other git tags carrying the same version.
+ */
+
+/**
+ * @typedef {object} ReleaseCheck
+ * @property {string} rule
+ * @property {boolean} ok
+ * @property {string} message
+ */
+
+/**
+ * @typedef {object} ReleaseViolation
+ * @property {string} rule
+ * @property {string} message
+ */
+
+/**
+ * @typedef {object} ReleaseNote
+ * @property {string} rule
+ * @property {string} message
+ */
+
+/**
+ * @typedef {object} ReleaseEvaluation
+ * @property {boolean} ok
+ * @property {'publish' | 'already-published' | 'refused'} verdict
+ * @property {readonly ReleaseCheck[]} checks
+ * @property {readonly ReleaseViolation[]} violations
+ * @property {readonly ReleaseNote[]} notes
+ * @property {readonly string[]} plan
+ */
+
+/**
+ * @typedef {object} MergeCommit
+ * @property {string} sha
+ * @property {readonly string[]} parents
+ * @property {string} subject
+ */
+
+/**
+ * @callback RecordCheck
+ * @param {string} rule
+ * @param {boolean} ok
+ * @param {string} expected
+ * @param {string} observed
+ * @returns {void}
+ */
+
+/**
+ * @callback RecordNote
+ * @param {string} rule
+ * @param {string} message
+ * @returns {void}
+ */
+
+/**
+ * @typedef {object} EvaluationContext
+ * @property {ReleaseEvaluationInput} input
+ * @property {RecordCheck} record
+ * @property {RecordNote} note
  */
 
 /** Stable semver `x.y.z`, matching `scripts/check-version-sync.mjs`. */
@@ -24,6 +164,18 @@ export const STABLE_VERSION_PATTERN = /^\d+\.\d+\.\d+$/;
 export const RELEASE_TAG_PATTERN = /^v(\d+\.\d+\.\d+)$/;
 
 /**
+ * The merge-commit subject shape GitHub generates when a pull request is
+ * merged through the web UI or `gh pr merge`:
+ * `Merge pull request #<n> from <owner>/<head-branch>`.
+ *
+ * The shape is the point. A subject that merely *mentions* the release branch
+ * (`docs: document the release-0-2-0 rollback plan`,
+ * `Merge branch tmp; revert release-0-2-0`) is not evidence that the release
+ * branch was merged, so it must never resolve the release commit.
+ */
+export const GITHUB_MERGE_SUBJECT_PATTERN = /^Merge pull request #(\d+) from ([^\s/]+)\/(.+)$/;
+
+/**
  * Default release gate for a published release.
  *
  * These are check-run *names* as reported by the GitHub Checks API
@@ -31,10 +183,12 @@ export const RELEASE_TAG_PATTERN = /^v(\d+\.\d+\.\d+)$/;
  * same check as the status context `CI / lint + typecheck + build + test`,
  * that is `<workflow name> / <job name>`.
  *
- * Keep this list in sync with:
- *   - the `jobs.<id>.name` values in `.github/workflows/ci.yml`, and
- *   - the `required_status_checks.contexts` registered on `main`
- *     (see `docs/adr/ADR-0003-public-main-protection.md`).
+ * Keep this list in sync with the `jobs.<id>.name` values in
+ * `.github/workflows/ci.yml`; `test/unit/release-verification.test.ts` parses
+ * that file and fails when a name here is not an actual CI job name, so the
+ * list cannot drift silently. The registered
+ * `required_status_checks` on `main` are cross-checked by the local-only
+ * `--cross-check-protection` mode (ADR-0010).
  *
  * `release-source-check / release-source-check` is deliberately absent: it is a
  * `pull_request`-time check on the release PR head, so it never produces a
@@ -53,7 +207,7 @@ export const DEFAULT_REQUIRED_RELEASE_CHECKS = Object.freeze([
  * Checks enforced at merge time on the release pull request. They have no check
  * run on the release merge commit and are therefore never part of the release
  * gate. Keep in sync with `.github/workflows/release-source-check.yml` and with
- * the `required_status_checks.contexts` registered on `main`.
+ * the `required_status_checks` registered on `main`.
  *
  * GitHub reports a required check in two shapes depending on how it was
  * registered: the check-run name (`release-source-check`) in
@@ -77,12 +231,21 @@ const PR_TIME_CHECK_NAMES = Object.freeze(
 /**
  * Whether a registered status check context names `name`, in either the
  * check-run-name shape or the `<workflow> / <job>` shape.
+ *
+ * @param {string} context
+ * @param {string} name
+ * @returns {boolean}
  */
 function coversCheckName(context, name) {
   return context === name || context.endsWith(` / ${name}`);
 }
 
-/** Whether a registered context is a merge-time pull request check. */
+/**
+ * Whether a registered context is a merge-time pull request check.
+ *
+ * @param {string} context
+ * @returns {boolean}
+ */
 function isPrTimeContext(context) {
   return (
     PR_TIME_CHECK_CONTEXTS.includes(context) ||
@@ -90,24 +253,65 @@ function isPrTimeContext(context) {
   );
 }
 
-/** `0.2.0` -> `release-0-2-0`. */
+/**
+ * `0.2.0` -> `release-0-2-0`.
+ *
+ * @param {string} version
+ * @returns {string}
+ */
 export function deriveReleaseBranchName(version) {
   return `release-${String(version).replaceAll('.', '-')}`;
 }
 
-/** `v0.2.0` -> `{ version: '0.2.0' }`; anything else -> `null`. */
+/**
+ * `v0.2.0` -> `{ version: '0.2.0' }`; anything else -> `null`.
+ *
+ * @param {string} tagName
+ * @returns {{ version: string } | null}
+ */
 export function parseReleaseTag(tagName) {
   const match = RELEASE_TAG_PATTERN.exec(String(tagName));
-  return match === null ? null : { version: match[1] };
+  return match === null ? null : { version: match[1] ?? '' };
 }
 
-/** `Merge pull request #12 from rebuildup/release-0-1-0` references `release-0-1-0`. */
-function referencesBranch(subject, releaseBranch) {
-  return String(subject)
-    .trim()
-    .replace(/[.,;:]+$/, '')
-    .split(/\s+/)
-    .some((token) => token === releaseBranch || token.endsWith(`/${releaseBranch}`));
+/**
+ * Parse a GitHub merge-commit subject.
+ *
+ * @param {string} subject
+ * @returns {{ prNumber: number, owner: string, headBranch: string } | null}
+ */
+export function parseGitHubMergeSubject(subject) {
+  const match = GITHUB_MERGE_SUBJECT_PATTERN.exec(String(subject).trim());
+  if (match === null) return null;
+  const [, prNumber, owner, headBranch] = match;
+  if (prNumber === undefined || owner === undefined || headBranch === undefined) return null;
+  return { prNumber: Number(prNumber), owner, headBranch };
+}
+
+/**
+ * Whether a commit is the merge commit that integrated the release branch.
+ *
+ * Two conditions, both required:
+ *   1. it is a real merge commit (two or more parents), and
+ *   2. its subject is the GitHub merge shape and the **last path segment** of
+ *      the head branch equals the release branch.
+ *
+ * The last segment is compared because GitHub always prefixes the head branch
+ * with its owner, so `rebuildup/release-0-2-0` names the branch
+ * `release-0-2-0`. A head branch that merely ends with the same segment
+ * (`docs/release-0-2-0`) is a different branch; it cannot be distinguished
+ * from a re-merge of the release branch by subject alone, so it stays a
+ * candidate and `expected-release-sha-ambiguous` refuses the run rather than
+ * picking one.
+ * @param {MergeCommit} commit
+ * @param {string} releaseBranch
+ * @returns {boolean}
+ */
+function integratesReleaseBranch(commit, releaseBranch) {
+  if (commit.parents.length < 2) return false;
+  const parsed = parseGitHubMergeSubject(commit.subject);
+  if (parsed === null) return false;
+  return parsed.headBranch.split('/').at(-1) === releaseBranch;
 }
 
 /**
@@ -120,20 +324,25 @@ function referencesBranch(subject, releaseBranch) {
  * (`Merge pull request #N from <owner>/release-<V>`), which stays readable long
  * after the release branch itself is deleted.
  *
- * When the same release branch was merged more than once, the newest such merge
- * is the released state.
+ * Every qualifying merge is returned as a candidate. More than one candidate is
+ * not resolved by "newest wins": it is refused, because picking one of two
+ * commits that both claim to be the release of `V` is a guess about what a
+ * public tag would point at.
  *
- * @param {{ merges: ReadonlyArray<{ sha: string, parents: readonly string[], subject: string }>, releaseBranch: string }} input
+ * @param {{ merges: readonly MergeCommit[], releaseBranch: string }} input
  *   `merges` must be ordered newest first, exactly as `git log --merges` emits.
- * @returns {{ sha: string, subject: string, candidates: number } | { sha: null, candidates: number }}
+ * @returns {ExpectedReleaseSha}
  */
 export function resolveExpectedReleaseSha({ merges, releaseBranch }) {
-  const candidates = merges.filter(
-    (commit) => commit.parents.length >= 2 && referencesBranch(commit.subject, releaseBranch),
-  );
+  const candidates = merges.filter((commit) => integratesReleaseBranch(commit, releaseBranch));
+  const candidateShas = candidates.map((commit) => commit.sha);
   const newest = candidates[0];
-  if (newest === undefined) return { sha: null, candidates: 0 };
-  return { sha: newest.sha, subject: newest.subject, candidates: candidates.length };
+  return {
+    sha: newest === undefined ? null : newest.sha,
+    subject: newest === undefined ? null : newest.subject,
+    candidates: candidates.length,
+    candidateShas,
+  };
 }
 
 /**
@@ -141,11 +350,14 @@ export function resolveExpectedReleaseSha({ merges, releaseBranch }) {
  *
  * GitHub evaluates a required status check by the **latest** check run for that
  * context, so re-running a failed job legitimately supersedes it. Runs are
- * ordered by `completedAt`, then `startedAt`, then numeric `id`.
+ * ordered by `completedAt`, then `startedAt`, then numeric `id`. A run with no
+ * `completedAt` (queued, in progress) sorts after every finished run, so a
+ * re-run queued on top of an earlier success still decides the gate and is
+ * refused as not-yet-completed.
  *
- * @param {ReadonlyArray<import('./release-rules.d.mts').CheckRun>} runs
+ * @param {readonly CheckRun[]} runs
  * @param {string} name
- * @returns {import('./release-rules.d.mts').CheckRun | null}
+ * @returns {CheckRun | null}
  */
 export function selectLatestCheckRun(runs, name) {
   let latest = null;
@@ -156,19 +368,33 @@ export function selectLatestCheckRun(runs, name) {
   return latest;
 }
 
+/**
+ * @param {CheckRun} a
+ * @param {CheckRun} b
+ * @returns {number}
+ */
 function compareCheckRuns(a, b) {
-  const keyOf = (run) => `${run.completedAt ?? ''}|${run.startedAt ?? ''}|${padId(run.id)}`;
+  const keyOf = (/** @type {CheckRun} */ run) => `${run.completedAt ?? ''}|${run.startedAt ?? ''}|${padId(run.id)}`;
   const aKey = keyOf(a);
   const bKey = keyOf(b);
   if (aKey === bKey) return 0;
   return aKey > bKey ? 1 : -1;
 }
 
+/**
+ * @param {unknown} id
+ * @returns {string}
+ */
 function padId(id) {
   if (id === null || id === undefined) return '0'.repeat(20);
   return String(id).padStart(20, '0');
 }
 
+/**
+ * @param {CheckRun} run
+ * @param {readonly string[]} applicableBranches
+ * @returns {boolean}
+ */
 function isApplicable(run, applicableBranches) {
   // An unknown head branch counts as applicable: scoping it out would silently
   // relax the gate.
@@ -177,6 +403,10 @@ function isApplicable(run, applicableBranches) {
     : applicableBranches.includes(run.headBranch);
 }
 
+/**
+ * @param {CheckRun} run
+ * @returns {string}
+ */
 function describeRun(run) {
   const conclusion = run.conclusion ?? 'no-conclusion';
   const where = run.url === null || run.url === undefined ? '' : ` (${run.url})`;
@@ -186,28 +416,28 @@ function describeRun(run) {
 /**
  * Evaluate every publication rule and return a verdict.
  *
- * @param {import('./release-rules.d.mts').ReleaseEvaluationInput} input
- * @returns {import('./release-rules.d.mts').ReleaseEvaluation}
+ * @param {ReleaseEvaluationInput} input
+ * @returns {ReleaseEvaluation}
  */
 export function evaluateReleasePublication(input) {
-  /** @type {import('./release-rules.d.mts').ReleaseCheck[]} */
+  /** @type {ReleaseCheck[]} */
   const checks = [];
-  /** @type {import('./release-rules.d.mts').ReleaseViolation[]} */
+  /** @type {ReleaseViolation[]} */
   const violations = [];
-  /** @type {import('./release-rules.d.mts').ReleaseNote[]} */
+  /** @type {ReleaseNote[]} */
   const notes = [];
 
-  const record = (rule, ok, expected, observed) => {
+  const record = /** @type {RecordCheck} */ (rule, ok, expected, observed) => {
     const message = `expected ${expected}; observed ${observed}`;
     checks.push({ rule, ok, message });
     if (!ok) violations.push({ rule, message });
   };
-  const note = (rule, message) => {
+  const note = /** @type {RecordNote} */ (rule, message) => {
     notes.push({ rule, message });
   };
 
   const version = input.packageVersion;
-  const quoted = (value) => JSON.stringify(value);
+  const quoted = (/** @type {unknown} */ value) => JSON.stringify(value);
 
   // --- the version source of truth is well formed ---------------------------
   const versionFormatted = STABLE_VERSION_PATTERN.test(version);
@@ -216,6 +446,14 @@ export function evaluateReleasePublication(input) {
     versionFormatted,
     `stable semver x.y.z in package.json#version at ${input.sourceRef}`,
     quoted(version),
+  );
+
+  // --- ...and it was read at the commit that is being tagged -----------------
+  record(
+    'version-source-sha',
+    input.sourceSha === input.targetSha,
+    `package.json#version to be read at the target release commit ${input.targetSha}`,
+    `version read from ${input.sourceRef}, which resolves to ${input.sourceSha}`,
   );
 
   // --- the tag name is exactly v<major>.<minor>.<patch> ---------------------
@@ -262,10 +500,14 @@ export function evaluateReleasePublication(input) {
       ? 'no such merge commit'
       : `${expectedSha} (${String(expected.subject)})`,
   );
-  if (expectedSha !== null && expected.candidates !== undefined && expected.candidates > 1) {
-    note(
-      'expected-release-sha',
-      `${quoted(input.releaseBranch)} was merged into ${input.mainRef} ${expected.candidates} times; the newest merge ${expectedSha} is treated as the released state`,
+
+  // --- ...and exactly one such merge commit, so the tag has one answer -------
+  if (expected.candidates > 1) {
+    record(
+      'expected-release-sha-ambiguous',
+      false,
+      `exactly one merge commit on ${input.mainRef} to integrate ${quoted(input.releaseBranch)}`,
+      `${expected.candidates} merge commits integrate it, so the released state is ambiguous: ${expected.candidateShas.join(', ')}`,
     );
   }
 
@@ -383,15 +625,7 @@ export function evaluateReleasePublication(input) {
   }
 
   // --- no duplicate release artifact for the same version --------------------
-  const duplicates = input.conflictingReleaseTags ?? [];
-  record(
-    'no-duplicate-release-artifacts',
-    duplicates.length === 0,
-    'no other GitHub Release to carry the same version',
-    duplicates.length === 0
-      ? 'none'
-      : `existing release tag(s) ${duplicates.map((name) => quoted(name)).join(', ')}`,
-  );
+  evaluateDuplicateArtifacts({ input, record, note });
 
   const ok = violations.length === 0;
   const alreadyPublished = tag !== null && release !== null;
@@ -401,6 +635,10 @@ export function evaluateReleasePublication(input) {
   return { ok, verdict, checks, violations, notes, plan };
 }
 
+/**
+ * @param {EvaluationContext} context
+ * @returns {void}
+ */
 function evaluateReleaseGate({ input, record, note }) {
   if (input.checkRunsReadable !== true) {
     record(
@@ -458,29 +696,60 @@ function evaluateReleaseGate({ input, record, note }) {
 }
 
 /**
- * Cross-check the committed required-check list against what branch protection
- * actually registers on `main`. A registered context that neither the release
- * gate nor `PR_TIME_CHECK_CONTEXTS` covers means the release gate is narrower
- * than the repository's own definition, which is a refusal, not a warning.
+ * Cross-check the committed required-check list against the status checks
+ * branch protection registers on the protected branch.
+ *
+ * This is a **local-only** cross-check (ADR-0010). `GITHUB_TOKEN` cannot be
+ * granted Administration: read, so the release-publish workflow never performs
+ * it and the committed `DEFAULT_REQUIRED_RELEASE_CHECKS` is the only definition
+ * of the gate there. When the cross-check was not performed, or was performed
+ * with a credential that could not read the answer, that fact is reported as
+ * such. It is never reported as "branch protection registers no required
+ * status check", because an unanswered request is not evidence of an empty
+ * configuration.
+ *
+ * @param {EvaluationContext} context
+ * @returns {void}
  */
 function evaluateProtectionCoverage({ input, record, note }) {
-  const configured = input.protectionContexts ?? null;
-  if (configured === null || configured.length === 0) {
-    const source = input.gateSource ?? 'an unset source';
-    const detail =
-      configured === null
-        ? `the required status checks registered on ${input.mainRef} could not be read, so ${JSON.stringify(input.requiredChecks)} (from ${source}) is the only definition of the release gate`
-        : `branch protection on ${input.mainRef} registers no required status check, so ${JSON.stringify(input.requiredChecks)} (from ${source}) is the only definition of the release gate`;
-    if (input.requireProtectionConfigured === true) {
-      record(
-        'protection-sync',
-        false,
-        'at least one readable required status check registered on the protected branch',
-        `${detail}; --require-protection-configured was set`,
-      );
-    } else {
-      note('protection-sync', detail);
-    }
+  const source = input.gateSource ?? 'an unset source';
+  const committed = `${JSON.stringify(input.requiredChecks)} (from ${source})`;
+
+  if (input.protectionCheck !== 'performed') {
+    refuseOrNote({
+      input,
+      record,
+      note,
+      detail:
+        'the branch-protection cross-check was not performed, so ' +
+        `${committed} is the only definition of the release gate; ` +
+        'run it locally with --cross-check-protection, because the release-publish ' +
+        'workflow token cannot read branch protection',
+      remedy: 'it cannot be decided without --cross-check-protection',
+    });
+    return;
+  }
+
+  const configured = input.protectionContexts;
+  if (configured === null) {
+    refuseOrNote({
+      input,
+      record,
+      note,
+      detail:
+        `the required status checks registered on ${input.mainRef} could not be read with this ` +
+        `credential, so ${committed} is the only definition of the release gate; ` +
+        're-run with a credential that has Administration: read',
+    });
+    return;
+  }
+  if (configured.length === 0) {
+    refuseOrNote({
+      input,
+      record,
+      note,
+      detail: `branch protection on ${input.mainRef} registers no required status check, so ${committed} is the only definition of the release gate`,
+    });
     return;
   }
 
@@ -506,6 +775,64 @@ function evaluateProtectionCoverage({ input, record, note }) {
   );
 }
 
+/**
+ * `protection-sync` is a note unless the operator asked for the configuration
+ * to be verified. `--require-protection-configured` without a performed,
+ * readable cross-check is itself a refusal: the request cannot be decided, and
+ * an undecidable request is never reported as a satisfied one.
+ *
+ * @param {EvaluationContext & { detail: string, remedy?: string }} context
+ * @returns {void}
+ */
+function refuseOrNote({ input, record, note, detail, remedy }) {
+  if (input.requireProtectionConfigured === true) {
+    record(
+      'protection-sync',
+      false,
+      `a readable, non-empty required status check configuration on ${input.mainRef}`,
+      `${detail}; --require-protection-configured was set${remedy === undefined ? '' : ` and ${remedy}`}`,
+    );
+  } else {
+    note('protection-sync', detail);
+  }
+}
+
+/**
+ * Refuse a second Release or tag that carries the same version.
+ *
+ * An incomplete inventory is a refusal, not an absence. A `null` release list or
+ * an unreadable tag list used to be indistinguishable from "no duplicates",
+ * which is a fail-open answer to a question about what already exists publicly.
+ */
+/**
+ * @param {EvaluationContext} context
+ * @returns {void}
+ */
+function evaluateDuplicateArtifacts({ input, record }) {
+  if (input.conflictingReleaseTagsReadable !== true) {
+    record(
+      'no-duplicate-release-artifacts',
+      false,
+      `a complete list of the existing GitHub Releases and git tags of ${input.repo}`,
+      'the existing Releases and tags could not be listed, so a duplicate artifact for this version cannot be ruled out',
+    );
+    return;
+  }
+  const duplicates = [...new Set([...input.conflictingReleaseTags, ...input.conflictingTagRefs])];
+  record(
+    'no-duplicate-release-artifacts',
+    duplicates.length === 0,
+    'no other git tag or GitHub Release to carry the same version',
+    duplicates.length === 0
+      ? 'none'
+      : `existing tag/release ${duplicates.map((name) => JSON.stringify(name)).join(', ')}`,
+  );
+}
+
+/**
+ * @param {{ input: ReleaseEvaluationInput, violations: readonly ReleaseViolation[] }} context
+ * @returns {string[]}
+ */
 function buildPlan({ input, violations }) {
   if (violations.length > 0) {
     const rules = [...new Set(violations.map((violation) => violation.rule))];
