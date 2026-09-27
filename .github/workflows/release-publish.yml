@@ -28,6 +28,11 @@ name: release-publish
 # verification verdict and the exact plan without mutating anything. Publishing
 # requires an explicit `dry_run: false`.
 #
+# The switch is read fail-closed. `gh workflow run -f dry_run=<value>` and the
+# REST dispatch endpoint accept arbitrary strings, so "anything that is not the
+# literal `false`" means dry run. Comparing against `true` instead would let
+# `dry_run=0`, `dry_run=yes`, or an empty value publish a public tag.
+#
 # Non-scope: npm registry publication, binary packaging, deployment, and
 # automatic version incrementing.
 
@@ -47,11 +52,12 @@ on:
         description: 'Comma-separated check-run names that must be successful. Defaults to the committed release gate.'
         required: false
         type: string
-      require_protection_configured:
-        description: 'Refuse to publish unless branch protection registers required status checks.'
-        required: false
-        default: false
-        type: boolean
+      # There is deliberately no `require_protection_configured` input. The
+      # branch-protection cross-check needs Administration: read, which
+      # `GITHUB_TOKEN` cannot grant, so from this workflow it could never
+      # succeed. It is a local-only cross-check behind
+      # `--cross-check-protection` (ADR-0010), and the committed release gate
+      # is the only definition of the gate here.
 
 # Least privilege: `contents: write` creates the tag and the release,
 # `checks: read` reads the check runs the release gate is decided from.
@@ -87,24 +93,24 @@ jobs:
           INPUT_SHA: ${{ inputs.sha }}
           INPUT_DRY_RUN: ${{ inputs.dry_run }}
           INPUT_REQUIRED_CHECKS: ${{ inputs.required_checks }}
-          INPUT_REQUIRE_PROTECTION: ${{ inputs.require_protection_configured }}
         run: |
           set -euo pipefail
+
+          # Fail closed: an unset, empty, or unexpectedly spelled value stays a
+          # dry run. Only the exact string `false` adds `--apply`.
+          INPUT_DRY_RUN="${INPUT_DRY_RUN:-true}"
 
           args=()
           if [ -n "${INPUT_SHA}" ]; then
             args+=(--sha "${INPUT_SHA}")
           fi
-          if [ "${INPUT_DRY_RUN}" != "true" ]; then
+          if [ "${INPUT_DRY_RUN}" = "false" ]; then
             args+=(--apply)
           fi
           if [ -n "${INPUT_REQUIRED_CHECKS}" ]; then
             while IFS= read -r check; do
               [ -n "$check" ] && args+=(--required-check "$check")
             done < <(printf '%s' "${INPUT_REQUIRED_CHECKS}" | tr ',' '\n' | sed 's/^ *//; s/ *$//')
-          fi
-          if [ "${INPUT_REQUIRE_PROTECTION}" = "true" ]; then
-            args+=(--require-protection-configured)
           fi
 
           # `"${args[@]}"` without a `-` default: the plain form expands an
@@ -132,9 +138,9 @@ jobs:
             echo
             echo "### release-publish"
             echo
-            if [ "${INPUT_DRY_RUN}" = "true" ]; then
-              echo "Dry run: nothing was created. Re-run with \`dry_run: false\` to publish."
-            else
+            if [ "${INPUT_DRY_RUN:-true}" = "false" ]; then
               echo "Publish run finished. Check the step log above for the verdict and the created artifacts."
+            else
+              echo "Dry run: nothing was created. Re-run with \`dry_run: false\` to publish."
             fi
           } >> "${GITHUB_STEP_SUMMARY}"
