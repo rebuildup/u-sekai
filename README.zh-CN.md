@@ -111,6 +111,13 @@ Flags (run):
 | 2 | adapter / provider runtime error |
 | 3 | participant run 中发生 capability violation |
 
+以 runtime failure 结束的 participant（adapter error、Reasoner failure，
+或其他任何终止原因）会作为 exit code `2` 报告，其 diagnostic 会保存在 run
+artifact 的 `evidence.runtimeErrors` 中。只有当**所有** participant 都到达了
+合法的终止状态（`finish` 或 `stepBudgetExceeded`）时才会返回 exit code
+`0`；部分 participant 结束、部分失败的 run 并不是完全成功，因此同样返回
+`2`。失败的 participant 及其原因也会输出到 stderr。
+
 ### Quality gate
 
 ```bash

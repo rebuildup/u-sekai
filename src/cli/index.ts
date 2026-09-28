@@ -7,9 +7,10 @@
  *   u-sekai --help
  *
  * Exit codes:
- *   0 success
+ *   0 success — every participant reached a legitimate terminal state
  *   1 validation error
- *   2 runtime error (adapter / reasoner)
+ *   2 runtime error (adapter / reasoner), including a participant that
+ *     terminated for any reason other than a clean finish
  *   3 capability violation during a participant run
  */
 
@@ -19,7 +20,8 @@ import type {
   ExperimentDefinition,
 } from '../domain/experiment.js';
 import { loadExperiment } from '../experiment/loader.js';
-import { runExperiment } from '../experiment/runner.js';
+import { runExperiment, runtimeErrorsForParticipant } from '../experiment/runner.js';
+import type { BehavioralEvidence } from '../domain/evidence.js';
 import { HttpAdapter } from '../adapter/browser/http-adapter.js';
 import { PlaywrightAdapter } from '../adapter/browser/playwright-adapter.js';
 import { startServer } from '../demo/environment/server.js';
@@ -84,6 +86,83 @@ Flags (run):
                               ANTHROPIC_API_KEY).
   --observer-reasoner <prov>  Override the observer reasoner provider.
 `);
+}
+
+/**
+ * Terminal reasons that mean the participant completed its exploration on
+ * its own terms, so the run as a whole succeeded.
+ *
+ * The classification is an *allowlist* of successful terminal states, not a
+ * list of known failure reasons. A terminal reason that this build does not
+ * know about therefore fails closed (exit 2) instead of silently reporting
+ * success, which is what a new failure reason needs to mean.
+ */
+const SUCCESSFUL_TERMINATION_REASONS: ReadonlySet<string> = new Set([
+  'finish',
+  'stepBudgetExceeded',
+  'finishFromObserver',
+  'finishFromSelfReport',
+]);
+
+const CAPABILITY_VIOLATION_REASON = 'capabilityViolation';
+
+export type RunExitClassification =
+  | { readonly code: 0; readonly failedParticipantIds: ReadonlyArray<string> }
+  | { readonly code: 2 | 3; readonly failedParticipantIds: ReadonlyArray<string> };
+
+/**
+ * Maps per-participant terminal reasons to the documented process exit code.
+ *
+ * - `0` every participant reached a legitimate terminal state
+ * - `3` at least one participant hit a capability violation — the more
+ *   specific signal, so it keeps its own documented code
+ * - `2` any other terminal reason (adapter / Reasoner / runtime failure),
+ *   including a mixed run where some participants finished and others did
+ *   not: the run did not fully succeed, so it must not report success
+ */
+export function classifyRunExit(
+  terminationReasons: Readonly<Record<string, string>>,
+): RunExitClassification {
+  const failed = Object.entries(terminationReasons)
+    .filter(([, reason]) => !SUCCESSFUL_TERMINATION_REASONS.has(reason))
+    .map(([participantId]) => participantId);
+  if (failed.length === 0) {
+    return { code: 0, failedParticipantIds: failed };
+  }
+  const anyCapabilityViolation = failed.some(
+    (participantId) => terminationReasons[participantId] === CAPABILITY_VIOLATION_REASON,
+  );
+  return { code: anyCapabilityViolation ? 3 : 2, failedParticipantIds: failed };
+}
+
+/** One line per failed participant, on stderr, with the persisted diagnostic. */
+function reportParticipantFailures(
+  classification: RunExitClassification,
+  terminationReasons: Readonly<Record<string, string>>,
+  evidence: BehavioralEvidence,
+  artifactDir: string,
+): void {
+  if (classification.code === 0) return;
+  const kind = classification.code === 3 ? 'capability violation' : 'runtime failure';
+  process.stderr.write(
+    `u-sekai: ${classification.failedParticipantIds.length} participant(s) ended in a ${kind} (exit ${classification.code}):\n`,
+  );
+  for (const participantId of classification.failedParticipantIds) {
+    const reason = terminationReasons[participantId] ?? 'unknown';
+    const diagnostics = runtimeErrorsForParticipant(evidence, participantId).map(
+      (entry) => oneLine(entry.message),
+    );
+    const detail = diagnostics.length > 0 ? ` -- ${diagnostics.join(' / ')}` : '';
+    process.stderr.write(`  ${participantId}: ${reason}${detail}\n`);
+  }
+  process.stderr.write(
+    `u-sekai: full diagnostics are persisted in ${path.join(artifactDir, 'result.json')} (evidence.runtimeErrors).\n`,
+  );
+}
+
+function oneLine(value: string): string {
+  const collapsed = value.replace(/\s+/g, ' ').trim();
+  return collapsed.length > 0 ? collapsed : '(no diagnostic recorded)';
 }
 
 async function main(): Promise<number> {
@@ -179,12 +258,19 @@ async function main(): Promise<number> {
         ...(Object.keys(overrides).length > 0 ? { reasonerOverrides: overrides } : {}),
       });
 
-      process.stdout.write(`run=${result.runId}\nartifact=${path.join(experiment.outDir, result.runId)}\n`);
+      const artifactDir = path.join(experiment.outDir, result.runId);
+      process.stdout.write(`run=${result.runId}\nartifact=${artifactDir}\n`);
       for (const [id, reason] of Object.entries(result.result.terminationReasons)) {
         process.stdout.write(`  ${id}: ${reason}\n`);
       }
-      const anyCap = Object.values(result.result.terminationReasons).some((r) => r === 'capabilityViolation');
-      return anyCap ? 3 : 0;
+      const classification = classifyRunExit(result.result.terminationReasons);
+      reportParticipantFailures(
+        classification,
+        result.result.terminationReasons,
+        result.result.evidence,
+        artifactDir,
+      );
+      return classification.code;
     } catch (err) {
       process.stderr.write(`u-sekai: ${(err as Error).message}\n`);
       if (err instanceof AdapterError) return 2;
