@@ -39,7 +39,9 @@
     "test:browser": "npm run build && vitest run --config test/vitest.browser.config.ts --reporter=default",
     "demo:server": "node --import tsx ./src/demo/environment/server.ts",
     "ci": "npm run lint && npm run typecheck && npm run version:check && npm run build && npm run test",
-    "version:check": "node scripts/check-version-sync.mjs"
+    "version:check": "node scripts/check-version-sync.mjs",
+    "release:verify": "node scripts/verify-release.mjs",
+    "release:publish": "node scripts/verify-release.mjs --apply"
   },
   "dependencies": {
     "playwright": "^1.48.0"

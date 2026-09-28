@@ -1,7 +1,21 @@
 import { readFileSync } from 'node:fs';
 
+/**
+ * @param {string} relativePath
+ * @returns {Record<string, unknown>}
+ */
 function readJson(relativePath) {
   return JSON.parse(readFileSync(new URL(relativePath, import.meta.url), 'utf8'));
+}
+
+/**
+ * @param {unknown} value
+ * @returns {Record<string, unknown>}
+ */
+function asRecord(value) {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+    ? /** @type {Record<string, unknown>} */ (value)
+    : {};
 }
 
 const pkg = readJson('../package.json');
@@ -16,8 +30,9 @@ if (lock.version !== pkg.version) {
   errors.push(`package-lock.json version ${JSON.stringify(lock.version)} != package.json version ${JSON.stringify(pkg.version)}`);
 }
 
-if (lock.packages?.['']?.version !== pkg.version) {
-  errors.push(`package-lock root version ${JSON.stringify(lock.packages?.['']?.version)} != package.json version ${JSON.stringify(pkg.version)}`);
+const lockPackages = asRecord(lock.packages);
+if (asRecord(lockPackages['']).version !== pkg.version) {
+  errors.push(`package-lock root version ${JSON.stringify(asRecord(lockPackages['']).version)} != package.json version ${JSON.stringify(pkg.version)}`);
 }
 
 const ref = process.env.GITHUB_HEAD_REF || process.env.GITHUB_REF_NAME || '';
