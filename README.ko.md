@@ -130,7 +130,15 @@ Flags (run):
 | 2 | adapter / provider runtime error |
 | 3 | participant run 중 capability violation |
 
-Reasoner의 structured-output 실패가 재시도 가능하지만 소진된 경우, participant는 `reasonerFailure`로 종료될 수도 있습니다. 이는 `reasoner.failure` evidence event로 기록되며 `capabilityViolation`과 의도적으로 **구분**됩니다. provider 결함이 participant의 capability 결함으로 보고되는 일이 없기 때문입니다(ADR-0008 참고). 종료 코드 3에 대응하는 것은 실제 `capabilityViolation`뿐이며, `reasonerFailure`만으로는 종료 코드 0을 유지합니다.
+Reasoner의 structured-output 실패가 재시도 가능하지만 소진된 경우, participant는 `reasonerFailure`로 종료될 수도 있습니다. 이는 `reasoner.failure` evidence event로 기록되며 `capabilityViolation`과 의도적으로 **구분**됩니다. provider 결함이 participant의 capability 결함으로 보고되는 일이 없기 때문입니다(ADR-0008 참고). `reasonerFailure`는 runtime failure이므로 종료 코드 `0`도 `3`도 아닌 `2`에 대응합니다. 종료 코드 3에 대응하는 것은 실제 `capabilityViolation`뿐입니다.
+
+runtime failure로 종료된 participant(adapter error, Reasoner failure, 그
+밖의 모든 terminal reason)는 exit code `2`로 보고되며, 해당 diagnostic은
+run artifact의 `evidence.runtimeErrors`에 저장된다. exit code `0`은
+**모든** participant가 정당한 terminal state(`finish` 또는
+`stepBudgetExceeded`)에 도달한 경우에만 반환된다. 일부 participant만
+종료되고 나머지가 실패한 run은 완전한 성공이 아니므로 이 경우에도 `2`가
+반환된다. 실패한 participant와 그 사유는 stderr에도 출력된다.
 
 ### Quality gate
 

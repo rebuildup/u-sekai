@@ -130,7 +130,14 @@ Flags (run):
 | 2 | adapter / provider runtime error |
 | 3 | participant run 中发生 capability violation |
 
-当 Reasoner 的 structured-output 失败可重试但重试耗尽时，participant 还会以 `reasonerFailure` 终止。它会记录为 `reasoner.failure` evidence event，并且与 `capabilityViolation` 有意 **区分** 开，避免把 provider 缺陷报告成 participant 的 capability 缺陷（详见 ADR-0008）。只有真正的 `capabilityViolation` 才会映射到退出码 3；仅 `reasonerFailure` 仍然退出 0。
+当 Reasoner 的 structured-output 失败可重试但重试耗尽时，participant 还会以 `reasonerFailure` 终止。它会记录为 `reasoner.failure` evidence event，并且与 `capabilityViolation` 有意 **区分** 开，避免把 provider 缺陷报告成 participant 的 capability 缺陷（详见 ADR-0008）。`reasonerFailure` 属于 runtime failure，因此映射到退出码 `2`，既不是 `0` 也不是 `3`；只有真正的 `capabilityViolation` 才会映射到退出码 3。
+
+以 runtime failure 结束的 participant（adapter error、Reasoner failure，
+或其他任何终止原因）会作为 exit code `2` 报告，其 diagnostic 会保存在 run
+artifact 的 `evidence.runtimeErrors` 中。只有当**所有** participant 都到达了
+合法的终止状态（`finish` 或 `stepBudgetExceeded`）时才会返回 exit code
+`0`；部分 participant 结束、部分失败的 run 并不是完全成功，因此同样返回
+`2`。失败的 participant 及其原因也会输出到 stderr。
 
 ### Quality gate
 
