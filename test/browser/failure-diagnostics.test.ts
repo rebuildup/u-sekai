@@ -99,6 +99,10 @@ class BreaksMidRunAdapter implements BrowserAdapter {
   async close(): Promise<void> {
     await this.inner.close();
   }
+
+  openDiagnostics() {
+    return this.inner.__lastOpenForTest();
+  }
 }
 
 describe('browser failure diagnostics', () => {
@@ -198,22 +202,29 @@ describe('browser failure diagnostics', () => {
 
   it('terminates every participant with error when the browser breaks mid-run', async () => {
     const def = await loadExperiment(fixture);
+    const adapters: BreaksMidRunAdapter[] = [];
     const { result, runId } = await runExperiment({
       experiment: { ...def, outDir },
-      adapterFactory: () => new BreaksMidRunAdapter(),
+      adapterFactory: () => {
+        const adapter = new BreaksMidRunAdapter();
+        adapters.push(adapter);
+        return adapter;
+      },
       resolveTargetUrl: () => server.baseUrl,
     });
 
+    const failureContext =
+      `runtimeErrors=${JSON.stringify(result.evidence.runtimeErrors)} openDiagnostics=${JSON.stringify(adapters.map((adapter) => adapter.openDiagnostics()))}`;
     const reasons = Object.values(result.terminationReasons);
-    expect(reasons).toHaveLength(def.participants.length);
+    expect(reasons, failureContext).toHaveLength(def.participants.length);
     for (const reason of reasons) {
       // The critical assertion: a run that never finished cannot be
       // reported as a finished exploration.
-      expect(reason).toBe('error');
+      expect(reason, failureContext).toBe('error');
     }
     // Each participant got exactly one (failing) step recorded.
     for (const p of def.participants) {
-      expect(result.evidence.stepCountByParticipant[p.id]).toBe(1);
+      expect(result.evidence.stepCountByParticipant[p.id], failureContext).toBe(1);
     }
     expect(result.evidence.terminationReasonByParticipant).toEqual(result.terminationReasons);
 
