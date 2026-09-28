@@ -8,12 +8,21 @@
  * - cap-the-budget exits cleanly,
  * - exit via `finish` action after a small number of scripted steps.
  *
- * This is the default Reasoner for tests and CI.
+ * This is the default Reasoner for tests and CI. It selects its response
+ * shape through the same marker mechanism as every other provider
+ * (ADR-0008) and always emits contract-valid content, so the structured
+ * output boundary never classifies it as a failure and never retries it.
  */
 
-import type { Reasoner, ReasonerRequest, ReasonerResponse } from '../../domain/reasoner.js';
+import type {
+  Reasoner,
+  ReasonerCompletionOptions,
+  ReasonerRequest,
+  ReasonerResponse,
+} from '../../domain/reasoner.js';
 import type { ParticipantAction } from '../../domain/capability.js';
 import type { ReasonerConfig } from '../../domain/experiment.js';
+import { detectStructuredOutputKind } from '../structured.js';
 
 interface ScriptedState {
   readonly script: ReadonlyArray<ParticipantAction>;
@@ -39,9 +48,11 @@ export function scriptedReasoner(
   };
 
   function pickAction(req: ReasonerRequest): ReasonerResponse {
-    // The runtime puts role markers in the systemPrompt for self-report
-    // and observer flows; the action flow uses a different systemPrompt.
-    if (/Emit a JSON object matching the SelfReport shape/.test(req.systemPrompt)) {
+    // The output kind is selected by the same marker mechanism the
+    // structured-output boundary uses, so scripted and live providers
+    // cannot disagree about which contract applies.
+    const outputKind = detectStructuredOutputKind(req.systemPrompt);
+    if (outputKind === 'selfReport') {
       state.finishedBySelfReport = true;
       return {
         kind: 'selfReport',
@@ -57,7 +68,7 @@ export function scriptedReasoner(
         usage: { inputTokens: req.messages.reduce((n, m) => n + m.content.length, 0), outputTokens: 64 },
       };
     }
-    if (/Produce an ObserverFindings JSON object/.test(req.systemPrompt)) {
+    if (outputKind === 'observerFindings') {
       return {
         kind: 'observerFindings',
         content: {
@@ -98,6 +109,6 @@ export function scriptedReasoner(
   return {
     providerId: 'scripted',
     modelId: `scripted:${seed}`,
-    complete: async (req) => pickAction(req),
+    complete: async (req: ReasonerRequest, _options?: ReasonerCompletionOptions) => pickAction(req),
   };
 }
