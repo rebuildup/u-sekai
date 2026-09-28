@@ -141,17 +141,27 @@ export async function runParticipant(opts: ParticipantRuntimeOptions): Promise<P
 
   const policy = resolveStructuredOutputPolicy(opts.structuredOutputPolicy);
 
-  await adapter.open(targetUrl);
+  let steps = 0;
+  let terminationReason: ParticipantRuntimeResult['terminationReason'] = 'error';
+  let lastError = '';
+
+  // A target the participant cannot open is a *participant* failure, not a
+  // run failure: the remaining participants, the observer and the artifact
+  // must still be produced, and the reason must be attached to this
+  // participant instead of aborting the whole run.
+  let opened = false;
+  try {
+    await adapter.open(targetUrl);
+    opened = true;
+  } catch (err) {
+    lastError = `adapter.open failed: ${errorMessage(err)}`;
+  }
 
   const actionSystemPrompt = participantActionSystemPrompt({
     memoryDescription: memoryWindowDescription(capability.memory),
   });
 
-  let steps = 0;
-  let terminationReason: ParticipantRuntimeResult['terminationReason'] = 'error';
-  let lastError = '';
-
-  for (let stepIndex = 0; stepIndex < budget; stepIndex++) {
+  for (let stepIndex = 0; opened && stepIndex < budget; stepIndex++) {
     try {
       await recorder.append({
         type: 'step.start',
@@ -374,36 +384,81 @@ export async function runParticipant(opts: ParticipantRuntimeOptions): Promise<P
     }
   }
 
-  if (steps >= budget && terminationReason === 'error') {
-    terminationReason = 'stepBudgetExceeded';
-    await recorder.append({
-      type: 'termination',
-      runId,
-      participantId,
-      ts: new Date().toISOString(),
-      reason: 'stepBudgetExceeded',
-    });
-    void StepBudgetExceeded; // referenced via runtime semantics
-  } else {
-    await recorder.append({
-      type: 'termination',
-      runId,
-      participantId,
-      ts: new Date().toISOString(),
-      reason: terminationReason,
-    });
+  try {
+    if (opened && steps >= budget && terminationReason === 'error') {
+      terminationReason = 'stepBudgetExceeded';
+      await recorder.append({
+        type: 'termination',
+        runId,
+        participantId,
+        ts: new Date().toISOString(),
+        reason: 'stepBudgetExceeded',
+      });
+      void StepBudgetExceeded; // referenced via runtime semantics
+    } else {
+      await recorder.append({
+        type: 'termination',
+        runId,
+        participantId,
+        ts: new Date().toISOString(),
+        reason: terminationReason,
+      });
+    }
+
+    const captured = await captureSelfReport(opts, recorder, reasoner, policy);
+    if (captured.error !== undefined) {
+      lastError = lastError === '' ? captured.error : `${lastError}; ${captured.error}`;
+    }
+
+    return {
+      steps,
+      selfReport: captured.selfReport,
+      terminationReason,
+      ...(lastError ? { error: lastError } : {}),
+    };
+  } finally {
+    // Defensive release: anything that escapes the post-loop phase must not
+    // leave the adapter (and, for a real browser, its process) alive. A
+    // failing release must not replace the run outcome that was already
+    // decided, so it is absorbed here.
+    await adapter.close().catch(() => undefined);
   }
+}
 
-  const selfReport = await generateSelfReport(opts, recorder, reasoner, policy);
+/**
+ * Capture the self-report, or report why it could not be captured. Losing a
+ * self-report is a degraded outcome, not a reason to discard the trace the
+ * participant already produced, so the failure is returned as a diagnostic
+ * next to a self-describing placeholder.
+ */
+async function captureSelfReport(
+  opts: ParticipantRuntimeOptions,
+  recorder: EvidenceRecorder,
+  reasoner: Reasoner,
+  policy: StructuredOutputPolicy,
+): Promise<{ selfReport: SelfReport; error?: string }> {
+  try {
+    return { selfReport: await generateSelfReport(opts, recorder, reasoner, policy) };
+  } catch (err) {
+    return {
+      selfReport: {
+        participantId: opts.participantId,
+        capturedAt: new Date().toISOString(),
+        goal: '',
+        productUnderstanding: '',
+        confusionPoints: [],
+        resultAlignedWithExpectation: false,
+        confidence: 0,
+        wouldReturn: false,
+        freeText: 'selfReport unavailable: capture failed',
+      },
+      error: `self-report capture failed: ${errorMessage(err)}`,
+    };
+  }
+}
 
-  await adapter.close();
-
-  return {
-    steps,
-    selfReport,
-    terminationReason,
-    ...(lastError ? { error: lastError } : {}),
-  };
+function errorMessage(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
 }
 
 async function generateSelfReport(
