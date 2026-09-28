@@ -95,12 +95,12 @@ describe('browser full run', () => {
     });
 
     const openDiagnostics = adapters.map((adapter) => adapter.__lastOpenForTest());
+    const screenshotDiagnostics = adapters.map((adapter) => adapter.__screenshotDiagnosticsForTest());
     const failureContext =
-      `runtimeErrors=${JSON.stringify(result.evidence.runtimeErrors)} openDiagnostics=${JSON.stringify(openDiagnostics)}`;
+      `runtimeErrors=${JSON.stringify(result.evidence.runtimeErrors)} openDiagnostics=${JSON.stringify(openDiagnostics)} screenshotDiagnostics=${JSON.stringify(screenshotDiagnostics)}`;
 
-    // Keep the launch-attempt count visible in the browser gate output.
-    // #37 intentionally captures evidence before introducing any recovery.
     console.info(`browser launch diagnostics: ${JSON.stringify(openDiagnostics)}`);
+    console.info(`browser screenshot diagnostics: ${JSON.stringify(screenshotDiagnostics)}`);
 
     // --- participants reached a clean terminal state ----------------
     expect(Object.keys(result.terminationReasons)).toHaveLength(def.participants.length);
@@ -116,6 +116,15 @@ describe('browser full run', () => {
         status: 'success',
         phase: 'ready',
       });
+    }
+    expect(screenshotDiagnostics, failureContext).toHaveLength(def.participants.length);
+    for (const participantDiagnostics of screenshotDiagnostics) {
+      expect(participantDiagnostics.length, failureContext).toBeGreaterThan(0);
+      for (const diagnostic of participantDiagnostics) {
+        expect(diagnostic.status, failureContext).toBe('success');
+        expect(diagnostic.attempts, failureContext).toBeGreaterThanOrEqual(1);
+        expect(diagnostic.attempts, failureContext).toBeLessThanOrEqual(2);
+      }
     }
     for (const p of result.participants) {
       expect(p.selfReport.participantId).toBe(p.participantId);
