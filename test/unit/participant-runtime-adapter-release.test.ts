@@ -214,18 +214,69 @@ describe('participant runtime: failures stay scoped to the participant', () => {
     expect(adapter.closeCalls).toBe(1);
   });
 
-  it('degrades a self-report capture failure to a placeholder plus a diagnostic', async () => {
+  it('degrades a self-report capture failure to a placeholder and keeps it observable', async () => {
     const adapter = new RecordingAdapter();
+    const recorder = new InMemoryRecorder();
     const result = await runParticipant(baseOptions({
       adapter,
       reasoner: selfReportFailingReasoner('provider returned no content'),
-      recorder: new InMemoryRecorder(),
+      recorder,
     }));
 
     // The exploration itself succeeded, so the terminal state is unchanged.
     expect(result.terminationReason).toBe('finish');
     expect(result.selfReport.freeText).toContain('unavailable');
-    expect(result.error).toBe('self-report capture failed: provider returned no content');
+    expect(adapter.closeCalls).toBe(1);
+
+    // The failure must be observable, but *how* depends on whether the
+    // Reasoner call sits behind the structured-output recovery boundary
+    // (ADR-0008). Without it the diagnostic is returned on the result; with
+    // it, the boundary absorbs the throw and records a typed
+    // `reasoner.failure` for the self-report channel instead. Both are
+    // acceptable; silently losing it is not. This assertion is therefore
+    // order-independent and valid whether or not #24 has landed.
+    const events = await recorder.snapshot() as unknown as ReadonlyArray<{ type: string; [k: string]: unknown }>;
+    const typedFailure = events.some(
+      (e) => e.type === 'reasoner.failure' && e.channel === 'selfReport',
+    );
+    const returnedDiagnostic = typeof result.error === 'string' && result.error !== '';
+    expect(typedFailure || returnedDiagnostic).toBe(true);
+  });
+
+  it('releases the adapter when the post-loop self-report phase throws outright', async () => {
+    const adapter = new RecordingAdapter();
+    const inner = new InMemoryRecorder();
+    // A failure the recovery boundary cannot absorb: the evidence sink is
+    // unavailable, so persisting the self-report prompt itself throws.
+    const recorder: EvidenceRecorder = {
+      append: async (event: RunEvent) => {
+        if (event.type === 'selfReport.prompt') throw new Error('evidence sink unavailable');
+        await inner.append(event);
+      },
+      snapshot: () => inner.snapshot(),
+      close: () => inner.close(),
+    };
+
+    const result = await runParticipant(baseOptions({
+      adapter,
+      reasoner: {
+        providerId: 'double',
+        modelId: 'double:finish',
+        complete: async (): Promise<ReasonerResponse> => ({
+          kind: 'action',
+          action: { kind: 'finish', reason: 'done' },
+          rationale: 'done',
+          usage: { inputTokens: 1, outputTokens: 1 },
+        }),
+      },
+      recorder,
+    }));
+
+    // The trace the participant already produced is not discarded.
+    expect(result.terminationReason).toBe('finish');
+    expect(result.selfReport.freeText).toContain('unavailable');
+    expect(result.error).toContain('self-report capture failed');
+    // The important part: the adapter is released even on this path.
     expect(adapter.closeCalls).toBe(1);
   });
 });
