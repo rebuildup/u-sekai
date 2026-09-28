@@ -103,6 +103,10 @@ class BreaksMidRunAdapter implements BrowserAdapter {
   openDiagnostics() {
     return this.inner.__lastOpenForTest();
   }
+
+  screenshotDiagnostics() {
+    return this.inner.__screenshotDiagnosticsForTest();
+  }
 }
 
 describe('browser failure diagnostics', () => {
@@ -214,7 +218,7 @@ describe('browser failure diagnostics', () => {
     });
 
     const failureContext =
-      `runtimeErrors=${JSON.stringify(result.evidence.runtimeErrors)} openDiagnostics=${JSON.stringify(adapters.map((adapter) => adapter.openDiagnostics()))}`;
+      `runtimeErrors=${JSON.stringify(result.evidence.runtimeErrors)} openDiagnostics=${JSON.stringify(adapters.map((adapter) => adapter.openDiagnostics()))} screenshotDiagnostics=${JSON.stringify(adapters.map((adapter) => adapter.screenshotDiagnostics()))}`;
     const reasons = Object.values(result.terminationReasons);
     expect(reasons, failureContext).toHaveLength(def.participants.length);
     for (const reason of reasons) {
