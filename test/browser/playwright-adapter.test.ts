@@ -8,7 +8,7 @@
 
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { createServer } from 'node:http';
-import { PlaywrightAdapter } from '../../src/adapter/browser/playwright-adapter.js';
+import { PlaywrightAdapter, captureScreenshotWithRecovery } from '../../src/adapter/browser/playwright-adapter.js';
 import { AdapterError } from '../../src/domain/errors.js';
 import { sha256Hex } from '../../src/evidence/hash.js';
 import type { ParticipantAction } from '../../src/domain/capability.js';
@@ -45,6 +45,58 @@ afterAll(async () => {
 });
 
 describe('PlaywrightAdapter (real Chromium)', () => {
+  it('retries the observed transient Page.captureScreenshot failure once', async () => {
+    let calls = 0;
+    const outcome = await captureScreenshotWithRecovery(async () => {
+      calls += 1;
+      if (calls === 1) {
+        throw new Error(
+          'page.screenshot: Protocol error (Page.captureScreenshot): Unable to capture screenshot',
+        );
+      }
+      return Uint8Array.from([0x89, 0x50, 0x4e, 0x47]);
+    });
+
+    expect(outcome.status).toBe('success');
+    if (outcome.status !== 'success') return;
+    expect(calls).toBe(2);
+    expect(outcome.attempts).toBe(2);
+    expect(outcome.failures).toHaveLength(1);
+    expect(outcome.failures[0]).toContain('Unable to capture screenshot');
+  });
+
+  it('does not retry unrelated screenshot failures', async () => {
+    let calls = 0;
+    const outcome = await captureScreenshotWithRecovery(async () => {
+      calls += 1;
+      throw new Error('page.screenshot: Target page, context or browser has been closed');
+    });
+
+    expect(outcome.status).toBe('failure');
+    if (outcome.status !== 'failure') return;
+    expect(calls).toBe(1);
+    expect(outcome.attempts).toBe(1);
+    expect(outcome.error.message).toContain('after 1 attempt');
+  });
+
+  it('fails closed when the transient screenshot retry budget is exhausted', async () => {
+    let calls = 0;
+    const outcome = await captureScreenshotWithRecovery(async () => {
+      calls += 1;
+      throw new Error(
+        'page.screenshot: Protocol error (Page.captureScreenshot): Unable to capture screenshot',
+      );
+    });
+
+    expect(outcome.status).toBe('failure');
+    if (outcome.status !== 'failure') return;
+    expect(calls).toBe(2);
+    expect(outcome.attempts).toBe(2);
+    expect(outcome.failures).toHaveLength(2);
+    expect(outcome.error.message).toContain('after 2 attempt');
+    expect(outcome.error.message).toContain('Unable to capture screenshot');
+  });
+
   it('reports the real viewport, a real focus rect and a real sha256 screenshot hash', async () => {
     const adapter = new PlaywrightAdapter({ viewport: { width: 1024, height: 640 } });
     try {
