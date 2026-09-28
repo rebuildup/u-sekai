@@ -1,0 +1,79 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "project-init security-audit findings",
+  "type": "array",
+  "$defs": {
+    "traceItem": {
+      "type": "object",
+      "required": ["kind", "path", "line", "description"],
+      "properties": {
+        "kind": { "enum": ["entrypoint", "propagation", "control", "sink"] },
+        "path": { "type": "string", "minLength": 1 },
+        "line": { "type": "integer", "minimum": 1 },
+        "description": { "type": "string", "minLength": 1 }
+      },
+      "additionalProperties": false
+    },
+    "common": {
+      "type": "object",
+      "required": ["fingerprint", "title", "principal", "invariant", "root_cause", "trace", "evidence", "conditions", "remediation_invariant", "regression_case"],
+      "properties": {
+        "fingerprint": { "type": "string", "minLength": 1 },
+        "title": { "type": "string", "minLength": 1 },
+        "principal": { "type": "string", "minLength": 1 },
+        "invariant": { "type": "string", "minLength": 1 },
+        "root_cause": { "type": "string", "minLength": 1 },
+        "trace": { "type": "array", "items": { "$ref": "#/$defs/traceItem" }, "minItems": 1 },
+        "evidence": { "type": "array", "items": { "type": "string" }, "minItems": 1 },
+        "conditions": { "type": "array", "items": { "type": "string" } },
+        "remediation_invariant": { "type": "string", "minLength": 1 },
+        "regression_case": { "type": "string", "minLength": 1 }
+      }
+    }
+  },
+  "items": {
+    "oneOf": [
+      {
+        "allOf": [
+          { "$ref": "#/$defs/common" },
+          {
+            "type": "object",
+            "required": ["verdict", "observed_result", "severity"],
+            "properties": {
+              "verdict": { "const": "confirmed" },
+              "observed_result": { "type": "string", "minLength": 1 },
+              "severity": { "enum": ["informational", "low", "medium", "high", "critical"] }
+            }
+          }
+        ]
+      },
+      {
+        "allOf": [
+          { "$ref": "#/$defs/common" },
+          {
+            "type": "object",
+            "required": ["verdict", "missing_fact", "local_validation_plan", "owner_validation_plan"],
+            "properties": {
+              "verdict": { "const": "needs_validation" },
+              "missing_fact": { "type": "string", "minLength": 1 },
+              "local_validation_plan": { "type": "string", "minLength": 1 },
+              "owner_validation_plan": { "type": "string", "minLength": 1 }
+            }
+          }
+        ]
+      },
+      {
+        "type": "object",
+        "required": ["verdict", "fingerprint", "title", "reason", "trace"],
+        "properties": {
+          "verdict": { "const": "rejected" },
+          "fingerprint": { "type": "string", "minLength": 1 },
+          "title": { "type": "string", "minLength": 1 },
+          "reason": { "type": "string", "minLength": 1 },
+          "trace": { "type": "array", "items": { "$ref": "#/$defs/traceItem" }, "minItems": 1 }
+        },
+        "additionalProperties": false
+      }
+    ]
+  }
+}

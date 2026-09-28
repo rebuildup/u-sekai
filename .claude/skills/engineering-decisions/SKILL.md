@@ -11,16 +11,27 @@ description: 実装・設計・修正方針を自律的に決定する時に、p
 
 project内のtechnical/product decisionは原則として次の順で確認する。
 
-1. **project-wide policy / canonical architecture / invariant**
-2. **design / specification / explicit task instruction**
-3. **existing implementationの多数派・一貫したconvention**
-4. framework/runtime/SDKのcurrent official guidance
-5. established ecosystem convention
-6. local best judgment
+1. **Constitution / tool-independent organizational invariant**
+2. **applicable public/external contract・persisted-data・protocol/schema compatibility obligation**
+3. **explicit product / organizational decision・canonical design/specification・explicit task instruction**
+4. **current Operating Model**
+5. **applicable Practice contract / project-local quality・security・delivery profile**
+6. **coherent existing implementation evidence**
+7. framework/runtime/SDKのcurrent official guidance
+8. established ecosystem convention
+9. local best judgment
 
-同一levelで矛盾する場合は、よりspecificかつ新しいcanonical sourceを優先する。
+同一levelで矛盾する場合は、よりspecificかつ新しいcanonical sourceを優先する。ただしinternal design/specificationは、上位に存在するpublic/external contract、released client、persisted data、protocol/schema等のcompatibility obligationを暗黙にoverrideしない。
 
 userの現在の明示要求が上位system/policyと矛盾しない限りtask scopeとして尊重するが、会話内の曖昧な表現からproject-wide policyを暗黙に上書きしない。
+
+## 1.1 全体最適とrefinement
+
+current defaultへのliteral compliance自体をobjectiveにしない。
+
+Constitutionとexplicit decisionを守ったうえで、project objective・quality・delivery・maintainability・cost・riskを全体として最適化する。
+
+Operating Model / Practiceと異なる手段を選ぶ場合は、該当する上位obligationとalternativeのguaranteeを確認する。同等以上のguaranteeを持つならdeviationは正常なdecision pathであり、単に既定toolを使わなかったことだけをfailureにしない。
 
 ## 2. 既存実装は最後のfallbackではなくevidence
 

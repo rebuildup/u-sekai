@@ -6,7 +6,7 @@
 
 ## Context
 
-The pinned upstream policy ([`rebuildup/project-init@release-0-1-1`](https://github.com/rebuildup/project-init/tree/release-0-1-1))
+The governance baseline ([`rebuildup/project-init@release-0-3-0`](https://github.com/rebuildup/project-init/tree/release-0-3-0))
 defaults to Japanese for:
 
 - Internal development docs
@@ -18,9 +18,9 @@ Product Hunt and similar channels, where the audience is primarily
 English-speaking. Japanese-only documentation creates friction for
 international contributors and reviewers.
 
-However, the 14 Skills under `.claude/skills/` are direct copies of the
+However, the 19 Skills under `.claude/skills/` are direct copies of the
 upstream-authored Skills. Translating them risks semantic drift relative to
-the pinned reference, and the rebuildup policy treats Skills as the
+the governance baseline, and the rebuildup policy treats Skills as the
 canonical policy contract.
 
 ## Decision
@@ -38,7 +38,7 @@ u-sekai **overrides** the upstream language convention as follows:
 | Branch names | identifier / version only | identifier / version only (no change) |
 
 The Skills exception is recorded because Skills are the canonical policy
-contract; translating them risks divergence from the pinned reference.
+contract; translating them risks divergence from the governance baseline.
 Translation policy is tracked in research issue **R-09** ([#11](https://github.com/rebuildup/u-sekai/issues/11)).
 
 ## Consequences
@@ -55,7 +55,7 @@ Negative / trade-offs:
   rely on machine translation or bilingual contributors. This is acceptable
   for the research / design phase and is a known follow-up.
 - A future decision to translate Skills must preserve operational
-  semantics with the pinned reference.
+  semantics with the governance baseline.
 
 Operational:
 

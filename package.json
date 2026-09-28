@@ -1,6 +1,6 @@
 {
   "name": "u-sekai",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "type": "module",
   "description": "Research infrastructure for exploratory user-experience evaluation by capability-constrained Synthetic Users.",
@@ -36,9 +36,12 @@
     "test:unit": "vitest run --dir test/unit --reporter=default",
     "test:integration": "vitest run --dir test/integration --reporter=default",
     "test:e2e": "vitest run --dir test/e2e --reporter=default",
+    "test:browser": "npm run build && vitest run --config test/vitest.browser.config.ts --reporter=default",
     "demo:server": "node --import tsx ./src/demo/environment/server.ts",
     "ci": "npm run lint && npm run typecheck && npm run version:check && npm run build && npm run test",
-    "version:check": "node scripts/check-version-sync.mjs"
+    "version:check": "node scripts/check-version-sync.mjs",
+    "release:verify": "node scripts/verify-release.mjs",
+    "release:publish": "node scripts/verify-release.mjs --apply"
   },
   "dependencies": {
     "playwright": "^1.48.0"

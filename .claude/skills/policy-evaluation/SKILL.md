@@ -1,15 +1,33 @@
 ---
 name: policy-evaluation
-description: Agent policy / Skill / promptがfresh agentから意図通り解釈・実行できるかを、deterministic checks・cold eval・grader controls・context budgetで検証する時に使用する。
+description: Constitution / Operating Model / Practice / Skillがorganizational outcomeとinvariantを維持するかを、formal model・deterministic checks・cold eval・grader controls・context budgetで検証する時に使用する。
 ---
 
 # Policy Evaluation
 
-Agent policyは文章が存在するだけでは完成しない。
+Organization policyは文章が存在するだけでは完成しない。Constitutional property、current Operating Model、replaceable Practice、Skill judgmentを区別して評価する。
 
 **policyが実行可能なcommand/configへ落ちる部分はdeterministicに検証し、判断を含む部分はfresh agentへcold contextで読ませ、意図したbehaviorを再現できることまで検証する。**
 
 policy changeのquality signalを、作者自身の読み直しや「もっともらしい回答」だけへ依存させない。
+
+## 0. Constitutional outcome gate
+
+policy changeを評価するとき、最初に「指定手順を使ったか」ではなくresulting organizationを確認する。
+
+最低限の観点:
+
+- artifact / attempt / evidence identityが保たれたか
+- authorityを持たないactorのdecisionが確定していないか
+- stale/partial evidenceがcurrent proofになっていないか
+- concurrent mutable ownershipが安全か
+- actor/session loss後にdurable stateから継続できるか
+- conflicting canonical authorityを作っていないか
+- safety mechanismがvalid progressを不必要に止めていないか
+
+tool/command-specific assertionは、そのPractice自体のcontractを評価する場合だけhard requirementにする。
+
+formalizableなconcurrency/recovery/identity propertyは `formal/Organization.tla` のabstract modelも参照する。TLC successをimplementation conformanceの代替にはしない。
 
 ## 1. Deterministic space / latent space
 
@@ -374,3 +392,25 @@ policy change完了時は、該当する範囲で次を示す。
 - execution profileの変更有無
 
 latent evalを実行できない環境では、未実施を明示し、deterministic controlsだけでlatent behaviorまで証明したと報告しない。
+
+
+## 13. Policy decay evaluation
+
+policyは追加だけでなく削除も評価する。
+
+non-constitutional ruleについて、model/tool capabilityやorganization designが変化した場合は次を比較する。
+
+- ruleあり
+- ruleなし
+- simpler replacement / alternative practice
+
+条件を揃えたcomparative evalでmeaningful outcome差がなく、上位invariantも維持される場合、そのruleをpreserveすること自体をquality goalにしない。
+
+削除candidate:
+
+- original regression/failure modeをcurrent capabilityがinstructionなしで安定回避する
+- replacement mechanismが同等以上のguaranteeを提供する
+- instructionが上位propertyを重複説明するだけ
+- context/coordination costがbenefitを上回る
+
+critical constitutional propertyを「新modelなら賢いはず」という期待だけで削除しない。削除対象はまずOperating Model / Practice / Skillの具体ruleとする。

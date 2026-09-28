@@ -80,7 +80,7 @@ predecessor_issue_or_pr
 predecessor_sha
 base_sha
 checkpoint_sha_or_snapshot
-execution_generation
+fencing_identity_or_execution_generation
 status
 completed_steps
 next_steps
@@ -95,6 +95,8 @@ updated_at
 ```
 
 checkpointはmachine-specific absolute pathやsecretへ依存させない。
+
+README / ADR /通常のIssue・PR本文等のreader-facing proseをrecovery journalとして使用しない。Issue / PRをcheckpoint carrierにする場合も、通常本文へ作業履歴を混在させず、recovery用途として明示されたstructured record / handoff surfaceへ分離する。reader-facing prose側は `writing-discipline` に従う。
 
 ## 4. Soft checkpoint / hard checkpoint
 
@@ -161,8 +163,8 @@ branch/UI clutterとhistory noiseを増やしすぎない方式を優先する�
 4. release branchでは`main`との差分を確認する。zero-diffならDraft release PR不要、differenceが存在するならDraft release PRとmetadataを確認・修復する。
 5. latest valid recovery checkpointを読む。
 6. canonical design/policy/decision refsを再確認する。
-7. observed generationに対するcompare-and-set等でrecovery ownershipを**原子的に取得**し、new `execution_generation` と一意なlease/fencing tokenを確定する。競合した場合は同じgenerationを共有せず、stateを再読してやり直す。
-8. active child/subagent stateをSupervisorへ問い合わせ、current generation/tokenとの関係をreconcileする。
+7. observed fencing identityに対するcompare-and-set等でrecovery ownershipを**原子的に取得**し、新しいfencing identityを確定する。current implementationでgeneration方式を使う場合はnew `execution_generation` と一意なlease/fencing tokenを発行する。競合した場合はownershipを共有せず、stateを再読してやり直す。
+8. active child/subagent stateをlogical Supervisorへ問い合わせ、current fencing identityとの関係をreconcileする。
 9. current workspaceをcheckpointからrecreateする。
 10. stack-ready workではrecorded predecessor SHAとcurrent intended predecessor stateを比較し、差があればstale baseとしてreconcileする。
 11. completed/pending validationをcurrent snapshotに対して再評価する。
@@ -170,7 +172,7 @@ branch/UI clutterとhistory noiseを増やしすぎない方式を優先する�
 13. stale base / conflicting integrationを確認する。
 14. remaining planを再構成する。
 15. safeな最小verificationを実行してstateを信頼できることを確認する。
-16. current generation/tokenの所有権を維持したまま作業を継続する。
+16. current fencing identityの所有権を維持したまま作業を継続する。
 
 native resumeが成功しても、重要なIssue/Project/branch/PR/stack/checkpoint stateとの整合を確認してから続行する。
 
@@ -183,7 +185,7 @@ parentが死亡しても、safeならchildを即cancelしない。
 recovered parent/coordinatorは:
 
 - child一覧を再発見
-- input snapshot / predecessor snapshot / generationを確認
+- input snapshot / predecessor snapshot / applicableなcurrent fencing identityを確認
 - running/completed/failed/orphanedを分類
 - completed resultをimmutable resultとして回収
 - stale child resultは自動統合しない
@@ -198,17 +200,17 @@ child自身も独立checkpointを持てるようにする。
 
 network partitionやtimeout後に旧agentと新agentが同時実行される可能性を前提にする。
 
-Supervisorはticket/taskごとにleaseまたはgeneration/fencing tokenを持つ。
+Supervisorはticket/taskごとにleaseまたはfencing identityを持つ。
 
-- mutable taskの初期 `execution_generation` は `1` とする
-- recovery/reassignment時はobserved generationに対するcompare-and-set等でownershipと次generationを原子的に取得する
-- 複数recoveryへ同じgeneration/tokenを発行しない
-- worker resultへgeneration/tokenを付与する
-- stale generation/tokenからのbranch integration / external writeを拒否する
+- current implementationがgeneration方式の場合、mutable taskの初期 `execution_generation` は `1` とする
+- recovery/reassignment時はobserved fencing identityに対するcompare-and-set等でownershipと新しいfencing identityを原子的に取得する
+- 複数recoveryへ同じfencing identityを発行しない
+- worker resultへapplicableなfencing identityを付与する
+- stale fencing identityからのbranch integration / external writeを拒否する
 - **各external write直前にcurrent fencing tokenを再検証する**
 - heartbeat消失だけで即座に同一side effectを再実行しない
 
-同じticket branchへ複数generationが同時pushすることを通常運用にしない。
+同じticket branchへ複数fencing identityが同時pushすることを通常運用にしない。
 
 ## 9. External side effects / idempotency
 
@@ -299,7 +301,7 @@ recovered taskを「再開成功」とみなす条件:
 - release branchはzero-diffならDraft release PR不要、first meaningful integrated difference後ならDraft release PRが存在しmetadataが整合
 - stackならpredecessor identity / exact base snapshotが確認済み
 - workspaceが追跡可能なsnapshot/commitから再構成済み
-- current execution generation/lease/fencing tokenを一意に所有している
+- current fencing identityを一意に所有している
 - stale executionがintegration/external-write権限を持たない
 - active childrenがreconciled済み
 - external side effectsの不明状態がない、または明示的blocker化済み

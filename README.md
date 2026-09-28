@@ -5,6 +5,7 @@
 > English is the canonical README. Translations follow this file and must not introduce independent specification.
 
 [![CI](https://github.com/rebuildup/u-sekai/actions/workflows/ci.yml/badge.svg)](https://github.com/rebuildup/u-sekai/actions/workflows/ci.yml)
+[![Browser smoke](https://github.com/rebuildup/u-sekai/actions/workflows/browser-smoke.yml/badge.svg)](https://github.com/rebuildup/u-sekai/actions/workflows/browser-smoke.yml)
 [![Version](https://img.shields.io/github/package-json/v/rebuildup/u-sekai?branch=main&label=version)](https://github.com/rebuildup/u-sekai/blob/main/package.json)
 [![License](https://img.shields.io/github/license/rebuildup/u-sekai)](./LICENSE)
 [![Node.js](https://img.shields.io/badge/Node.js-%3E%3D20-339933?logo=node.js&logoColor=white)](https://nodejs.org/)
@@ -86,6 +87,28 @@ Expected: a directory whose name starts with `demo-` containing
 `manifest.json`, `events.ndjson`, `observations/`, `self-report/`,
 `observer-report.json`, `result.json`, and `summary.md`.
 
+### Browser path (real Chromium)
+
+The run above is the deterministic HTTP path and needs no browser. To drive
+a real Chromium through the same pipeline, install the browser runtime once
+and then run the browser gate and the CLI:
+
+```bash
+npx playwright install --with-deps chromium
+npm run test:browser
+node dist/cli/index.js run test/fixtures/experiment.task-tracker.browser.json \
+  --adapter playwright \
+  --reasoner scripted \
+  --observer-reasoner scripted \
+  --out runs
+```
+
+The browser suite is deliberately **excluded from `npm test`** so that the
+default gate stays fast and needs no browser installed. See
+[`docs/browser-runtime.md`](./docs/browser-runtime.md) for the runtime
+requirements, the artifact layout, and the troubleshooting paths when a
+host is missing Chromium's system libraries.
+
 ### Live smoke (real Anthropic model)
 
 The default scripted reasoner needs no API key. To use the real provider:
@@ -100,6 +123,10 @@ node dist/cli/index.js run test/fixtures/experiment.task-tracker.json \
 ```
 
 The CLI never stores the API key in the artifact. See ADR-0005.
+
+The live-provider path is not covered by any automated gate and was **not
+exercised during 0.2.0 development** — no API key was available, so no claim
+is made about its behaviour.
 
 ### CLI
 
@@ -124,15 +151,38 @@ Exit codes:
 | 2 | adapter / provider runtime error |
 | 3 | capability violation during a participant run |
 
+A participant can also terminate as `reasonerFailure`, when a Reasoner
+structured-output failure is recoverable but exhausted. It is recorded as a
+`reasoner.failure` evidence event and is deliberately **distinct** from
+`capabilityViolation`, so a provider defect is never reported as a
+participant capability defect; see ADR-0008. `reasonerFailure` is a runtime
+failure and therefore maps to exit code `2`, not `0` and not `3`; only a real
+`capabilityViolation` maps to exit code `3`.
+
+A participant that ends in a runtime failure — an adapter error, a Reasoner
+failure, or any other terminal reason — is reported as exit code `2`, and
+its diagnostic is persisted in the run artifact under
+`evidence.runtimeErrors`. Exit code `0` is returned only when **every**
+participant reached a legitimate terminal state (`finish` or
+`stepBudgetExceeded`): a run in which some participants finished and others
+failed did not fully succeed, so it also exits `2`. The failed participants
+and their reasons are additionally listed on stderr.
+
 ### Quality gate
 
 ```bash
-npm run lint       # eslint flat config
-npm run typecheck  # tsc --noEmit
-npm run test       # vitest: unit + integration + e2e
-npm run build      # tsc emit to dist/
-npm run ci         # all of the above, in order
+npm run lint          # eslint flat config
+npm run typecheck     # tsc --noEmit
+npm run test          # vitest: unit + integration + e2e
+npm run test:browser  # vitest: the Playwright suite; needs the browser runtime
+npm run build         # tsc emit to dist/
+npm run ci            # lint, typecheck, version:check, build, test
 ```
+
+`npm run test:browser` is **not** part of `npm test` or `npm run ci`: it needs
+a Playwright Chromium install (`npx playwright install --with-deps chromium`),
+so the default gate stays fast and browser-free. See
+[`docs/browser-runtime.md`](./docs/browser-runtime.md).
 
 No external LLM API key is required to pass CI.
 
@@ -142,6 +192,11 @@ No external LLM API key is required to pass CI.
 artifacts read it directly, the release branch name is checked against it in
 CI, and the README version badge reads the same field from GitHub. Run
 `npm run version:check` to verify package-lock and release-branch alignment.
+
+After `release-x-y-z -> main` is merged, the same field becomes the release
+identity: `npm run release:publish` tags the release commit `v<version>` and
+creates the matching GitHub Release. See
+[`docs/release-process.md`](./docs/release-process.md).
 
 ---
 
@@ -267,20 +322,27 @@ decisions.
 ├─ tsconfig.json         (typecheck: src + test)
 ├─ tsconfig.build.json   (tsc emit: src -> dist)
 ├─ vitest.config.ts      (test runner: unit + integration + e2e)
+├─ test/vitest.browser.config.ts (test runner: browser)
 ├─ eslint.config.js      (lint)
 ├─ src/                  (implementation)
 ├─ test/
 │  ├─ unit/              (capability, scripted reasoner, loader, recorder)
 │  ├─ integration/       (demo server + scripted full run)
 │  ├─ e2e/               (CLI child process)
+│  ├─ browser/           (Playwright adapter, full run, leak checks)
 │  └─ fixtures/
 ├─ docs/
-│  ├─ adr/               (ADR-0001 ... ADR-0007)
+│  ├─ adr/               (ADR-0001 ... ADR-0010)
 │  ├─ architecture.md
+│  ├─ browser-runtime.md (Playwright / Chromium requirements)
 │  ├─ non-reality.md
+│  ├─ release-process.md (ticket -> tag -> GitHub Release)
 │  └─ research-issues/
 ├─ .github/workflows/
 │  ├─ ci.yml             (lint+type+test+build, no external API)
+│  ├─ browser-smoke.yml  (real Chromium smoke, no external API)
+│  ├─ release-source-check.yml (release branch name vs package version)
+│  ├─ release-publish.yml     (tag + GitHub Release publication)
 │  └─ manual-live-smoke.yml  (workflow_dispatch, uses ANTHROPIC_API_KEY)
 └─ .claude/skills/       (project-local Skills, pinned upstream)
 ```
@@ -288,7 +350,8 @@ decisions.
 ## Current limitations / non-goals
 
 - **Calibration against real users, generative benchmarks, baseline-vs-candidate scoring, universal UX scores, accessibility simulation, advanced cognitive / forgetting models, automatic persona generation, multi-provider matrix, desktop / mobile, GUI dashboard, Firecracker / Kubernetes / distributed execution, large-scale parallel population execution**: all deliberately deferred. See [`docs/research-issues/`](./docs/research-issues/) for the underlying research backlog.
-- **Real Playwright + real LLM**: shipped but not part of CI. CI runs scripted reasoner + HTTP adapter only. A manual live-smoke workflow is provided.
+- **Real LLM**: not part of any automated gate. `ci.yml` and `browser-smoke.yml` both run the deterministic scripted reasoner; a manual live-smoke workflow is provided. No API key was available during 0.2.0 development, so the live-provider path is unverified.
+- **Real Playwright**: gated, but by a separate workflow. `ci.yml` stays HTTP-only so the default gate needs no browser; `browser-smoke.yml` is the real-Chromium gate. See [`docs/browser-runtime.md`](./docs/browser-runtime.md).
 - **Deterministic E2E**: depends on Node's localhost port allocation and the demo HTTP server; we run it under `vitest` with `pool: 'forks'` to avoid port collisions between files.
 
 ## Contributing

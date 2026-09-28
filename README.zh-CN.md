@@ -5,6 +5,7 @@
 > 本文档是 [README.md](./README.md) 的简体中文翻译。英文版是项目规范与状态的 canonical source；如有差异，请以英文版为准。
 
 [![CI](https://github.com/rebuildup/u-sekai/actions/workflows/ci.yml/badge.svg)](https://github.com/rebuildup/u-sekai/actions/workflows/ci.yml)
+[![Browser smoke](https://github.com/rebuildup/u-sekai/actions/workflows/browser-smoke.yml/badge.svg)](https://github.com/rebuildup/u-sekai/actions/workflows/browser-smoke.yml)
 [![Version](https://img.shields.io/github/package-json/v/rebuildup/u-sekai?branch=main&label=version)](https://github.com/rebuildup/u-sekai/blob/main/package.json)
 [![License](https://img.shields.io/github/license/rebuildup/u-sekai)](./LICENSE)
 [![Node.js](https://img.shields.io/badge/Node.js-%3E%3D20-339933?logo=node.js&logoColor=white)](https://nodejs.org/)
@@ -73,6 +74,22 @@ ls runs
 
 预期会生成一个以 `demo-` 开头的目录，其中包含 `manifest.json`、`events.ndjson`、`observations/`、`self-report/`、`observer-report.json`、`result.json` 和 `summary.md`。
 
+### Browser path（真实 Chromium）
+
+上面的 run 是确定性的 HTTP 路径，不需要浏览器。要用同一套流水线驱动真实 Chromium，先安装一次浏览器运行时，然后运行 browser gate 和 CLI：
+
+```bash
+npx playwright install --with-deps chromium
+npm run test:browser
+node dist/cli/index.js run test/fixtures/experiment.task-tracker.browser.json \
+  --adapter playwright \
+  --reasoner scripted \
+  --observer-reasoner scripted \
+  --out runs
+```
+
+browser suite 被有意 **排除在 `npm test` 之外**，以保持默认 gate 快速且无需安装浏览器。运行时要求、artifact 布局，以及宿主缺少 Chromium 系统库时的排查方法，见 [`docs/browser-runtime.md`](./docs/browser-runtime.md)。
+
 ### Live smoke（真实模型）
 
 默认 scripted reasoner 不需要 API key。使用真实 provider 时：
@@ -87,6 +104,8 @@ node dist/cli/index.js run test/fixtures/experiment.task-tracker.json \
 ```
 
 CLI 不会把 API key 写入 artifact。详见 ADR-0005。
+
+live provider 路径不在任何自动 gate 覆盖范围内，并且在 0.2.0 开发期间 **未被执行过**（当时没有可用的 API key），因此不对其行为作任何断言。
 
 ### CLI
 
@@ -111,15 +130,27 @@ Flags (run):
 | 2 | adapter / provider runtime error |
 | 3 | participant run 中发生 capability violation |
 
+当 Reasoner 的 structured-output 失败可重试但重试耗尽时，participant 还会以 `reasonerFailure` 终止。它会记录为 `reasoner.failure` evidence event，并且与 `capabilityViolation` 有意 **区分** 开，避免把 provider 缺陷报告成 participant 的 capability 缺陷（详见 ADR-0008）。`reasonerFailure` 属于 runtime failure，因此映射到退出码 `2`，既不是 `0` 也不是 `3`；只有真正的 `capabilityViolation` 才会映射到退出码 3。
+
+以 runtime failure 结束的 participant（adapter error、Reasoner failure，
+或其他任何终止原因）会作为 exit code `2` 报告，其 diagnostic 会保存在 run
+artifact 的 `evidence.runtimeErrors` 中。只有当**所有** participant 都到达了
+合法的终止状态（`finish` 或 `stepBudgetExceeded`）时才会返回 exit code
+`0`；部分 participant 结束、部分失败的 run 并不是完全成功，因此同样返回
+`2`。失败的 participant 及其原因也会输出到 stderr。
+
 ### Quality gate
 
 ```bash
 npm run lint
 npm run typecheck
 npm run test
+npm run test:browser
 npm run build
 npm run ci
 ```
+
+`npm run test:browser` **不属于** `npm test` 或 `npm run ci`：它需要安装 Playwright 的 Chromium（`npx playwright install --with-deps chromium`），因此默认 gate 保持快速且不依赖浏览器。见 [`docs/browser-runtime.md`](./docs/browser-runtime.md)。
 
 CI 不需要任何外部 LLM API key。
 
@@ -128,6 +159,8 @@ CI 不需要任何外部 LLM API key。
 `package.json#version` 是 canonical release version。CLI 和 run artifact 直接读取此值，CI 会检查 release branch 名与其一致，README 的 version badge 也读取同一字段。
 
 运行 `npm run version:check` 可以验证 package-lock 与 release branch 的同步状态。
+
+`release-x-y-z -> main` 合并之后，同一个字段就成为 release identity：`npm run release:publish` 会给 release commit 打上 `v<version>` 标签，并创建对应的 GitHub Release。详见 [`docs/release-process.md`](./docs/release-process.md)。
 
 ---
 
@@ -255,7 +288,8 @@ cli/                     entry point (u-sekai <cmd>)
 ## 当前限制 / non-goals
 
 - real-user calibration、generative benchmark、baseline-vs-candidate scoring、universal UX score、accessibility simulation、高级 cognitive / forgetting model、自动 persona generation、multi-provider matrix、desktop / mobile、GUI dashboard、Firecracker / Kubernetes / distributed execution、大规模并行 population execution 都明确推迟到后续阶段。
-- real Playwright + real LLM 已实现，但不属于 CI。CI 使用 scripted reasoner + HTTP adapter；真实模型通过 manual live-smoke workflow 验证。
+- real LLM 不在任何自动 gate 的覆盖范围内。`ci.yml` 和 `browser-smoke.yml` 都使用确定性的 scripted reasoner；真实模型通过 manual live-smoke workflow 验证。0.2.0 开发期间没有可用的 API key，因此 live provider 路径未经验证。
+- real Playwright 有 gate，但由独立的 workflow 承担。`ci.yml` 只跑 HTTP，使默认 gate 无需浏览器；真实 Chromium 的 gate 由 `browser-smoke.yml` 负责。详见 [`docs/browser-runtime.md`](./docs/browser-runtime.md)。
 - deterministic E2E 依赖 Node 的 localhost port allocation 和 demo HTTP server。为避免测试文件之间的端口冲突，Vitest 使用 `pool: 'forks'`。
 
 ## Contributing
