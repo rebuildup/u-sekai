@@ -9,13 +9,17 @@ import type {
 import type {
   RunEvent,
   BehavioralEvidence,
+  ReasonerFailureEvent,
+  ReasonerFailureEvidence,
   TerminationEvent,
   StoredObservation,
 } from '../domain/evidence.js';
 import type { RunResult } from '../domain/result.js';
 import type { SelfReport } from '../domain/self-report.js';
 import type { Reasoner } from '../domain/reasoner.js';
+import type { ReasonerConfig } from '../domain/experiment.js';
 import type { BrowserAdapter } from '../adapter/browser/interface.js';
+import type { StructuredOutputPolicy } from '../reasoner/structured.js';
 import { InMemoryRecorder } from '../evidence/recorder.js';
 import { FileArtifactIO } from '../evidence/artifact.js';
 import { createReasoner } from '../reasoner/interface.js';
@@ -33,6 +37,14 @@ export interface RunExperimentOptions {
     readonly perParticipant?: Partial<Record<string, { provider: 'scripted' | 'anthropic' }>>;
     readonly observer?: { provider: 'scripted' | 'anthropic' };
   };
+  /**
+   * Overrides Reasoner construction. Defaults to `createReasoner`; an
+   * integration seam that lets a test drive the whole run with a
+   * deterministic provider and no live credential.
+   */
+  readonly reasonerFactory?: (config: ReasonerConfig, ctx: { participantLabel?: string; role: 'participant' | 'observer' | 'selfReport' }) => Reasoner;
+  /** Overrides the structured-output recovery policy for every Reasoner channel (ADR-0008). */
+  readonly structuredOutputPolicy?: Partial<StructuredOutputPolicy>;
 }
 
 export interface RunExperimentResult {
@@ -56,6 +68,7 @@ export async function runExperiment(opts: RunExperimentOptions): Promise<RunExpe
   });
 
   const targetUrl = opts.resolveTargetUrl(opts.experiment.environment);
+  const makeReasoner = opts.reasonerFactory ?? createReasoner;
 
   const participants: Array<{
     participant: ExperimentDefinition['participants'][number];
@@ -70,7 +83,7 @@ export async function runExperiment(opts: RunExperimentOptions): Promise<RunExpe
     const reasonerCfg = reasonerOverride
       ? { ...p.reasoner, ...reasonerOverride }
       : p.reasoner;
-    const reasoner: Reasoner = createReasoner(reasonerCfg, {
+    const reasoner: Reasoner = makeReasoner(reasonerCfg, {
       role: 'participant',
       participantLabel: `${opts.experiment.id}:${p.id}`,
     });
@@ -84,6 +97,7 @@ export async function runExperiment(opts: RunExperimentOptions): Promise<RunExpe
       recorder,
       opts.experiment.userStory,
       opts.experiment.budget.maxStepsPerParticipant,
+      opts.structuredOutputPolicy,
     );
     participants.push(participantObs);
   }
@@ -92,13 +106,14 @@ export async function runExperiment(opts: RunExperimentOptions): Promise<RunExpe
   const observerConfig = opts.reasonerOverrides?.observer
     ? { ...opts.experiment.observer, ...opts.reasonerOverrides.observer }
     : opts.experiment.observer;
-  const observerReasoner = createReasoner(observerConfig, { role: 'observer' });
+  const observerReasoner = makeReasoner(observerConfig, { role: 'observer' });
   const observerReport = await runObserver({
     runId,
     reasoner: observerReasoner,
     recorder,
     userStory: opts.experiment.userStory,
     participants: opts.experiment.participants.map((p) => ({ participantId: p.id, personaPrompt: p.personaPrompt })),
+    ...(opts.structuredOutputPolicy !== undefined ? { structuredOutputPolicy: opts.structuredOutputPolicy } : {}),
   });
 
   const endedAt = new Date().toISOString();
@@ -148,6 +163,7 @@ async function runParticipantAndCollect(
   recorder: InMemoryRecorder,
   userStory: string,
   budget: number,
+  structuredOutputPolicy?: Partial<StructuredOutputPolicy>,
 ): Promise<{
   participant: ExperimentDefinition['participants'][number];
   selfReport: SelfReport;
@@ -174,6 +190,7 @@ async function runParticipantAndCollect(
         observation: obs,
       });
     },
+    ...(structuredOutputPolicy !== undefined ? { structuredOutputPolicy } : {}),
   });
 
   const lastEvent = (await recorder.snapshot())
@@ -245,6 +262,28 @@ function buildBehavioralEvidence(
       };
     });
 
+  // Structured Reasoner failures are their own evidence channel: a
+  // provider or contract defect must not be read as a participant
+  // capability defect, and a recovered failure must stay visible (ADR-0008).
+  const reasonerFailures: ReasonerFailureEvidence[] = events
+    .filter((e): e is ReasonerFailureEvent => e.type === 'reasoner.failure')
+    .map((f) => ({
+      ts: f.ts,
+      where:
+        `channel=${f.channel} outputKind=${f.outputKind} participant=${f.participantId ?? 'n/a'} ` +
+        `step=${f.stepIndex ?? 'n/a'} attempt=${f.attempt}/${f.maxAttempts}`,
+      channel: f.channel,
+      outputKind: f.outputKind,
+      failureKind: f.failureKind,
+      provider: f.provider,
+      modelId: f.modelId,
+      attempt: f.attempt,
+      maxAttempts: f.maxAttempts,
+      retryable: f.retryable,
+      recoveryOutcome: f.recoveryOutcome,
+      message: f.message,
+    }));
+
   return {
     runId,
     startedAt,
@@ -254,6 +293,7 @@ function buildBehavioralEvidence(
     actionSequencesByParticipant,
     navigationsByParticipant,
     runtimeErrors,
+    reasonerFailures,
     terminationReasonByParticipant,
     participantConfigurations,
     experimentSummaryHash: fnv1aHex(events.map((e) => `${e.type}@${e.ts}`).join('|')),

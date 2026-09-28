@@ -77,12 +77,63 @@ export interface CapabilityViolationEvent {
   readonly reason: string;
 }
 
+/**
+ * One failed structured-output attempt (ADR-0008).
+ *
+ * Every field needed to tell retry-success from retry-exhaustion is on the
+ * event itself, so a reader never has to correlate with the surrounding
+ * trace. The payload carries no HTTP headers, no API key, and only a hard
+ * capped, redacted excerpt of provider text.
+ */
+export interface ReasonerFailureEvent {
+  readonly type: 'reasoner.failure';
+  readonly runId: string;
+  readonly ts: string;
+  /** Which structured output was expected. */
+  readonly outputKind: 'action' | 'selfReport' | 'observerFindings';
+  /** Which Reasoner channel produced the failure. */
+  readonly channel: 'participant' | 'observer' | 'selfReport';
+  readonly failureKind: import('./errors.js').StructuredFailureKind;
+  readonly provider: string;
+  readonly modelId: string;
+  /** 1-based attempt number. */
+  readonly attempt: number;
+  readonly maxAttempts: number;
+  /** Whether the taxonomy and policy considered this failure kind retryable. */
+  readonly retryable: boolean;
+  /** Whether another attempt was actually made. */
+  readonly willRetry: boolean;
+  /** Whether recovery eventually succeeded, or the sequence was exhausted. */
+  readonly recoveryOutcome: 'recovered' | 'exhausted';
+  /** Redacted, bounded diagnostic message. */
+  readonly message: string;
+  readonly participantId?: string;
+  readonly stepIndex?: number;
+  readonly httpStatus?: number;
+  /** Redacted, hard-capped provider text excerpt. */
+  readonly excerpt?: string;
+}
+
+export type TerminationReason =
+  | 'finish'
+  | 'stepBudgetExceeded'
+  | 'capabilityViolation'
+  | 'error'
+  | 'finishFromObserver'
+  | 'finishFromSelfReport'
+  /**
+   * Terminal state for a recoverable-but-exhausted structured-output
+   * failure (ADR-0008). Distinct from `capabilityViolation` so a provider
+   * defect is never reported as a participant capability defect.
+   */
+  | 'reasonerFailure';
+
 export interface TerminationEvent {
   readonly type: 'termination';
   readonly runId: string;
   readonly participantId: string;
   readonly ts: string;
-  readonly reason: 'finish' | 'stepBudgetExceeded' | 'capabilityViolation' | 'error' | 'finishFromObserver' | 'finishFromSelfReport';
+  readonly reason: TerminationReason;
 }
 
 export interface SelfReportPromptEvent {
@@ -139,6 +190,7 @@ export type RunEvent =
   | ActionEvent
   | ActionResultEvent
   | CapabilityViolationEvent
+  | ReasonerFailureEvent
   | TerminationEvent
   | SelfReportPromptEvent
   | SelfReportResponseEvent
@@ -146,6 +198,26 @@ export type RunEvent =
   | ObserverResponseEvent
   | RunStartEvent
   | RunEndEvent;
+
+/**
+ * One Reasoner structured-output failure, folded into
+ * `BehavioralEvidence` so a run's real failure mode is diagnosable from
+ * `result.json` without re-reading `events.ndjson` (ADR-0008).
+ */
+export interface ReasonerFailureEvidence {
+  readonly ts: string;
+  readonly where: string;
+  readonly channel: ReasonerFailureEvent['channel'];
+  readonly outputKind: ReasonerFailureEvent['outputKind'];
+  readonly failureKind: ReasonerFailureEvent['failureKind'];
+  readonly provider: string;
+  readonly modelId: string;
+  readonly attempt: number;
+  readonly maxAttempts: number;
+  readonly retryable: boolean;
+  readonly recoveryOutcome: ReasonerFailureEvent['recoveryOutcome'];
+  readonly message: string;
+}
 
 export interface BehavioralEvidence {
   readonly runId: string;
@@ -155,8 +227,16 @@ export interface BehavioralEvidence {
   readonly stepCountByParticipant: Record<string, number>;
   readonly actionSequencesByParticipant: Record<string, ReadonlyArray<ParticipantAction>>;
   readonly navigationsByParticipant: Record<string, ReadonlyArray<{ step: number; from: string; to: string }>>;
+  /** Runtime-enforced capability violations. Provider defects live in `reasonerFailures`. */
   readonly runtimeErrors: ReadonlyArray<{ ts: string; where: string; message: string }>;
-  readonly terminationReasonByParticipant: Record<string, TerminationEvent['reason']>;
+  /**
+   * Structured Reasoner failures, including recovered ones. Always populated
+   * by the experiment runner, so a run produced by this version always carries
+   * it; optional only so that older producers of this evidence type stay
+   * assignable. See ADR-0008.
+   */
+  readonly reasonerFailures?: ReadonlyArray<ReasonerFailureEvidence>;
+  readonly terminationReasonByParticipant: Record<string, TerminationReason>;
   readonly participantConfigurations: ReadonlyArray<{
     participantId: string;
     personaPrompt: string;
