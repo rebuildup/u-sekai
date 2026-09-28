@@ -83,12 +83,83 @@ export interface OpenDiagnostics {
   readonly message?: string;
 }
 
+export interface ScreenshotCaptureDiagnostics {
+  readonly stepIndex: number;
+  readonly attempts: number;
+  readonly status: 'success' | 'failure';
+  readonly failures: ReadonlyArray<string>;
+}
+
+type ScreenshotCaptureOutcome =
+  | {
+      readonly status: 'success';
+      readonly png: Uint8Array;
+      readonly attempts: number;
+      readonly failures: ReadonlyArray<string>;
+    }
+  | {
+      readonly status: 'failure';
+      readonly attempts: number;
+      readonly failures: ReadonlyArray<string>;
+      readonly error: Error;
+    };
+
 const DEFAULT_VIEWPORT = { width: 1280, height: 800 } as const;
 const DEFAULT_ACTION_TIMEOUT_MS = 10_000;
 const DEFAULT_SETTLE_GRACE_MS = 250;
 const DEFAULT_MAX_WAIT_MS = 30_000;
+const MAX_SCREENSHOT_ATTEMPTS = 2;
 /** How far the in-page selector builder may walk up the tree. */
 const MAX_SELECTOR_DEPTH = 8;
+
+/**
+ * Bounded recovery for the transient Chromium failure captured in #37.
+ *
+ * Only the exact Page.captureScreenshot "Unable to capture screenshot"
+ * protocol failure is retried. Browser-closed, timeout, navigation and
+ * arbitrary errors fail immediately rather than being papered over.
+ *
+ * @internal exported so the recovery policy can be proven deterministically.
+ */
+export async function captureScreenshotWithRecovery(
+  capture: () => Promise<Uint8Array>,
+): Promise<ScreenshotCaptureOutcome> {
+  const failures: string[] = [];
+
+  for (let attempt = 1; attempt <= MAX_SCREENSHOT_ATTEMPTS; attempt += 1) {
+    try {
+      return {
+        status: 'success',
+        png: await capture(),
+        attempts: attempt,
+        failures,
+      };
+    } catch (err) {
+      const message = describeError(err);
+      failures.push(message);
+      const retryable = isRetryableScreenshotFailure(message);
+      if (!retryable || attempt === MAX_SCREENSHOT_ATTEMPTS) {
+        return {
+          status: 'failure',
+          attempts: attempt,
+          failures,
+          error: new Error(
+            `screenshot capture failed after ${attempt} attempt(s): ${message}`,
+          ),
+        };
+      }
+    }
+  }
+
+  throw new Error('unreachable screenshot recovery state');
+}
+
+function isRetryableScreenshotFailure(message: string): boolean {
+  return (
+    /Page\.captureScreenshot/i.test(message) &&
+    /Unable to capture screenshot/i.test(message)
+  );
+}
 
 export class PlaywrightAdapter implements BrowserAdapter {
   readonly adapterId = 'playwright';
@@ -104,6 +175,7 @@ export class PlaywrightAdapter implements BrowserAdapter {
   private recentActions: RecordedAction[] = [];
   private lastClose: CloseDiagnostics | null = null;
   private lastOpen: OpenDiagnostics | null = null;
+  private screenshotDiagnostics: ScreenshotCaptureDiagnostics[] = [];
 
   private readonly headless: boolean;
   private readonly defaultViewport: { width: number; height: number };
@@ -184,13 +256,25 @@ export class PlaywrightAdapter implements BrowserAdapter {
     const page = this.requirePage('observe');
     const phaseRef = { phase: 'screenshot' };
     try {
-      const png = await page.screenshot({
-        type: 'png',
-        fullPage: false,
-        // Deterministic pixels: no CSS animation, no blinking caret.
-        animations: 'disabled',
-        caret: 'hide',
+      const screenshot = await captureScreenshotWithRecovery(() =>
+        page.screenshot({
+          type: 'png',
+          fullPage: false,
+          // Deterministic pixels: no CSS animation, no blinking caret.
+          animations: 'disabled',
+          caret: 'hide',
+        }),
+      );
+      this.screenshotDiagnostics.push({
+        stepIndex,
+        attempts: screenshot.attempts,
+        status: screenshot.status,
+        failures: screenshot.failures,
       });
+      if (screenshot.status === 'failure') {
+        throw screenshot.error;
+      }
+      const png = screenshot.png;
       const size = page.viewportSize() ?? this.viewport;
       phaseRef.phase = 'title';
       const title = await page.title();
@@ -350,6 +434,10 @@ export class PlaywrightAdapter implements BrowserAdapter {
 
   __lastOpenForTest(): OpenDiagnostics | null {
     return this.lastOpen;
+  }
+
+  __screenshotDiagnosticsForTest(): ReadonlyArray<ScreenshotCaptureDiagnostics> {
+    return this.screenshotDiagnostics;
   }
 
   __resetRecentForTest(): void {
