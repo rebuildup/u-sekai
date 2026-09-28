@@ -144,7 +144,7 @@ export async function captureScreenshotWithRecovery(
           attempts: attempt,
           failures,
           error: new Error(
-            `screenshot capture failed after ${attempt} attempt(s): ${message}`,
+            `screenshot capture failed after ${attempt} attempt(s): ${formatScreenshotFailureHistory(failures)}`,
           ),
         };
       }
@@ -152,6 +152,18 @@ export async function captureScreenshotWithRecovery(
   }
 
   throw new Error('unreachable screenshot recovery state');
+}
+
+/**
+ * Renders every attempt's diagnostic, numbered, so the terminal error carries
+ * the full history. Without this the first failure exists only in
+ * `ScreenshotCaptureDiagnostics.failures`, which lives on the adapter instance
+ * and never reaches `evidence.runtimeErrors` — so a reader of the durable
+ * artifact would see only the last attempt and lose the transient that
+ * triggered the retry in the first place.
+ */
+function formatScreenshotFailureHistory(failures: ReadonlyArray<string>): string {
+  return failures.map((message, index) => `attempt ${index + 1}: ${message}`).join('; ');
 }
 
 function isRetryableScreenshotFailure(message: string): boolean {

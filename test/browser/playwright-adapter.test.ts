@@ -97,6 +97,42 @@ describe('PlaywrightAdapter (real Chromium)', () => {
     expect(outcome.error.message).toContain('Unable to capture screenshot');
   });
 
+  it('carries every attempt in the terminal error, not only the last one', async () => {
+    // Distinct diagnostics per attempt. Asserting the same string twice would
+    // pass even if the implementation only kept the final message, so the two
+    // attempts must differ in a way that is individually identifiable.
+    const diagnostics = [
+      'page.screenshot: Protocol error (Page.captureScreenshot): Unable to capture screenshot (transient compositor reset)',
+      'page.screenshot: Protocol error (Page.captureScreenshot): Unable to capture screenshot (second distinct failure)',
+    ];
+    let calls = 0;
+    const outcome = await captureScreenshotWithRecovery(async () => {
+      const message = diagnostics[calls] ?? diagnostics[diagnostics.length - 1];
+      calls += 1;
+      throw new Error(message ?? 'unreachable');
+    });
+
+    expect(outcome.status).toBe('failure');
+    if (outcome.status !== 'failure') return;
+    expect(calls).toBe(2);
+
+    // Layer 1: the structured recovery result keeps both.
+    expect(outcome.failures).toHaveLength(2);
+    expect(outcome.failures[0]).toContain('transient compositor reset');
+    expect(outcome.failures[1]).toContain('second distinct failure');
+
+    // Layer 2: the terminal error keeps both, attempt-numbered. This is the
+    // string that becomes the AdapterError message and therefore the durable
+    // artifact diagnostic.
+    const message = outcome.error.message;
+    expect(message).toContain('attempt 1:');
+    expect(message).toContain('attempt 2:');
+    expect(message).toContain('transient compositor reset');
+    expect(message).toContain('second distinct failure');
+    // And it is genuinely the history, not one message repeated.
+    expect(message.match(/Unable to capture screenshot/g)).toHaveLength(2);
+  });
+
   it('fails closed through observe() and preserves both attempts when the screenshot budget is exhausted', async () => {
     // White-box: the fault being simulated is a browser-level protocol
     // failure that cannot be produced from outside the adapter, so the

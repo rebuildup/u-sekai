@@ -90,9 +90,14 @@ class ScreenshotAlwaysFailsAdapter implements BrowserAdapter {
     if (!page) throw new Error('inner adapter page is null after a successful open');
     const original = page.screenshot.bind(page);
     page.screenshot = (async () => {
-      this.screenshotCalls.push(0);
+      const attempt = this.screenshotCalls.length + 1;
+      this.screenshotCalls.push(attempt);
+      // A distinct diagnostic per attempt. If the terminal message only kept
+      // the last one, the earlier attempt would be invisible in the artifact.
       throw new Error(
-        'page.screenshot: Protocol error (Page.captureScreenshot): Unable to capture screenshot',
+        attempt === 1
+          ? 'page.screenshot: Protocol error (Page.captureScreenshot): Unable to capture screenshot (transient compositor reset)'
+          : 'page.screenshot: Protocol error (Page.captureScreenshot): Unable to capture screenshot (persistent second failure)',
       );
     }) as typeof page.screenshot;
     void original;
@@ -272,6 +277,9 @@ describe('browser failure diagnostics', () => {
 
     // The diagnostic survives into the run artifact, not just the log, so the
     // failure is diagnosable from the evidence alone.
+    //
+    // The full attempt history must be present, not only the last attempt: the
+    // first diagnostic is what explains why a retry happened at all.
     const runtimeErrors = result.evidence.runtimeErrors;
     expect(runtimeErrors).toHaveLength(def.participants.length);
     for (const entry of runtimeErrors) {
@@ -279,6 +287,14 @@ describe('browser failure diagnostics', () => {
       expect(entry.message).toContain('playwright observe failed during screenshot');
       expect(entry.message).toContain('after 2 attempt(s)');
       expect(entry.message).toContain('Unable to capture screenshot');
+      expect(entry.message, 'attempt 1 diagnostic lost from the artifact').toContain(
+        'attempt 1:',
+      );
+      expect(entry.message, 'attempt 2 diagnostic lost from the artifact').toContain(
+        'attempt 2:',
+      );
+      expect(entry.message).toContain('transient compositor reset');
+      expect(entry.message).toContain('persistent second failure');
     }
 
     // Bounded per observe() call, and recorded as evidence.
@@ -288,12 +304,22 @@ describe('browser failure diagnostics', () => {
       expect(diagnostics.every((d) => d.attempts === 2 && d.status === 'failure')).toBe(true);
     }
 
-    // No screenshot may exist for a step whose capture never succeeded.
+    // Negative evidence for a capture that never succeeded: the contract is
+    //   capture failed -> observe() failed -> no PNG, no observation JSON,
+    //   terminationReason = error, diagnostic in runtimeErrors.
+    // Asserted per participant, and asserted as absence rather than relaxed.
     const runDir = path.join(outDir, runId);
     for (const p of def.participants) {
       const shots = path.join(runDir, 'screenshots', p.id);
       expect(existsSync(shots) ? await fs.readdir(shots) : []).toEqual([]);
+      const obsDir = path.join(runDir, 'observations', p.id);
+      expect(existsSync(obsDir) ? await fs.readdir(obsDir) : []).toEqual([]);
     }
+    // No step may have been recorded at all, so no evidence row claims a page
+    // was observed.
+    expect(result.evidence.stepCountByParticipant).toEqual(
+      Object.fromEntries(def.participants.map((p) => [p.id, 0])),
+    );
   }, 180_000);
 
   it('terminates every participant with error when the browser breaks mid-run', async () => {
