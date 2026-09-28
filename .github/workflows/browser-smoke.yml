@@ -1,6 +1,6 @@
 name: Browser smoke
 
-# Real-browser release gate for the 0.2.0 line.
+# Real-browser release gate for every release line.
 #
 # `ci.yml` stays the fast, deterministic, HTTP-only gate. This workflow
 # is the parallel browser gate: it installs Chromium, runs the browser
@@ -18,9 +18,9 @@ name: Browser smoke
 
 on:
   push:
-    branches: [release-0-2-0]
+    branches: ['release-*']
   pull_request:
-    branches: [release-0-2-0]
+    branches: ['release-*']
 
 permissions:
   contents: read
