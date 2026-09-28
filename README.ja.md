@@ -5,6 +5,7 @@
 > この文書は [README.md](./README.md) の日本語訳です。仕様・プロジェクト状態の canonical source は英語版です。差異がある場合は英語版を優先してください。
 
 [![CI](https://github.com/rebuildup/u-sekai/actions/workflows/ci.yml/badge.svg)](https://github.com/rebuildup/u-sekai/actions/workflows/ci.yml)
+[![Browser smoke](https://github.com/rebuildup/u-sekai/actions/workflows/browser-smoke.yml/badge.svg)](https://github.com/rebuildup/u-sekai/actions/workflows/browser-smoke.yml)
 [![Version](https://img.shields.io/github/package-json/v/rebuildup/u-sekai?branch=main&label=version)](https://github.com/rebuildup/u-sekai/blob/main/package.json)
 [![License](https://img.shields.io/github/license/rebuildup/u-sekai)](./LICENSE)
 [![Node.js](https://img.shields.io/badge/Node.js-%3E%3D20-339933?logo=node.js&logoColor=white)](https://nodejs.org/)
@@ -73,6 +74,22 @@ ls runs
 
 `demo-` で始まるディレクトリが作成され、その中に `manifest.json`, `events.ndjson`, `observations/`, `self-report/`, `observer-report.json`, `result.json`, `summary.md` が生成されます。
 
+### Browser path（実 Chromium）
+
+上記の run は決定的な HTTP path であり、ブラウザは不要です。同一のパイプラインで実 Chromium を駆動するには、まず browser runtime を一度インストールし、browser gate と CLI を実行します。
+
+```bash
+npx playwright install --with-deps chromium
+npm run test:browser
+node dist/cli/index.js run test/fixtures/experiment.task-tracker.browser.json \
+  --adapter playwright \
+  --reasoner scripted \
+  --observer-reasoner scripted \
+  --out runs
+```
+
+browser suite は意図的に `npm test` から **除外** されています。通常の gate を高速に保ち、ブラウザ未インストール環境でも実行できるようにするためです。runtime 要件、artifact レイアウト、ホストが Chromium のシステムライブラリ不足の場合の対処方法は [`docs/browser-runtime.md`](./docs/browser-runtime.md) を参照してください。
+
 ### Live smoke（実モデル）
 
 標準の scripted reasoner にはAPIキーは不要です。実プロバイダーを使用する場合:
@@ -87,6 +104,8 @@ node dist/cli/index.js run test/fixtures/experiment.task-tracker.json \
 ```
 
 CLI は API key を artifact に保存しません。詳細は ADR-0005 を参照してください。
+
+live provider 経路は自動 gate の対象外であり、0.2.0 開発期間中に **実行されていません**（利用可能な API key がなかったため）。その動作についていかなる主張もしません。
 
 ### CLI
 
@@ -111,6 +130,8 @@ Flags (run):
 | 2 | adapter / provider runtime error |
 | 3 | participant run 中の capability violation |
 
+participant は、Reasoner の structured-output failure が retry 可能だが枯渇した場合に `reasonerFailure` として終了することもできます。これは `reasoner.failure` evidence event として記録され、`capabilityViolation` とは意図的に **区別** されます。provider 側の欠陥が participant の capability 欠陥として報告されることはないためです（ADR-0008 を参照）。`reasonerFailure` は runtime failure であり、終了コード `0` でも `3` でもなく `2` に対応します。終了コード 3 に対応するのは実際の `capabilityViolation` のみです。
+
 runtime failure で終了した participant（adapter error、Reasoner failure、
 それ以外の終端理由のいずれか）は exit code `2` として報告され、その
 diagnostic は run artifact の `evidence.runtimeErrors` に保存される。exit
@@ -125,9 +146,12 @@ participant だけが終了し他が失敗した run は完全な成功ではな
 npm run lint
 npm run typecheck
 npm run test
+npm run test:browser
 npm run build
 npm run ci
 ```
+
+`npm run test:browser` は `npm test` にも `npm run ci` にも **含まれません**。Playwright の Chromium インストール（`npx playwright install --with-deps chromium`）が必要なため、通常の gate は高速かつブラウザ非依存のまま保たれています。[`docs/browser-runtime.md`](./docs/browser-runtime.md) を参照してください。
 
 CI の通過に外部LLM APIキーは不要です。
 
@@ -136,6 +160,8 @@ CI の通過に外部LLM APIキーは不要です。
 `package.json#version` が canonical release version です。CLI と run artifact はこの値を直接読み、release branch 名も CI でこの値と照合されます。README の version badge も GitHub 上の同じ値を表示します。
 
 `npm run version:check` で package-lock と release branch の整合性を検証できます。
+
+`release-x-y-z -> main` の merge 完了後、同じ値が release identity になります。`npm run release:publish` が release commit に `v<version>` タグを打ち、対応する GitHub Release を作成します。詳細は [`docs/release-process.md`](./docs/release-process.md) を参照してください。
 
 ---
 
@@ -263,7 +289,8 @@ cli/                     entry point (u-sekai <cmd>)
 ## 現在の制約 / non-goals
 
 - real user との calibration、generative benchmark、baseline-vs-candidate scoring、universal UX score、accessibility simulation、高度な cognitive / forgetting model、自動 persona generation、multi-provider matrix、desktop / mobile、GUI dashboard、Firecracker / Kubernetes / distributed execution、大規模並列 population execution は意図的に後続へ延期しています。
-- real Playwright + real LLM は実装されていますが CI の一部ではありません。CI は scripted reasoner + HTTP adapter を使用し、実モデル用には manual live-smoke workflow を提供します。
+- real LLM は自動 gate の対象外です。`ci.yml` と `browser-smoke.yml` はどちらも決定的な scripted reasoner を使用し、実モデル用には manual live-smoke workflow を提供します。0.2.0 開発期間中は利用可能な API key がなく、live provider 経路は未検証です。
+- real Playwright は gate を持つものの、別の workflow によるものです。`ci.yml` は HTTP のみに留め、通常の gate がブラウザ非依存になるようにしています。実 Chromium の gate は `browser-smoke.yml` が担当します。[`docs/browser-runtime.md`](./docs/browser-runtime.md) を参照してください。
 - deterministic E2E は Node の localhost port allocation と demo HTTP server に依存します。テストファイル間のport collisionを避けるため `vitest` の `pool: 'forks'` を使用します。
 
 ## Contributing
