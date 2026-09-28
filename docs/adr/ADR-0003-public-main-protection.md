@@ -129,14 +129,20 @@ them.
     "require_code_owner_reviews": false,
     "required_approving_review_count": 0
   },
+  "required_status_checks": {
+    "strict": false,
+    "contexts": []
+  },
   "allow_force_pushes": false,
   "allow_deletions": false,
   "required_conversation_resolution": true
 }
 ```
 
-There is deliberately **no `required_status_checks` block**, and
-`strict` is `false`.
+`required_status_checks` is present but carries **zero** contexts, which is how
+the API expresses "no check is required". That is deliberately different from
+omitting the key: omitting it disables status-check protection and leaves no
+place to record `strict`, so the intended `false` could not be stated.
 
 | Setting | Value |
 | --- | --- |
@@ -146,8 +152,8 @@ There is deliberately **no `required_status_checks` block**, and
 | `required_pull_request_reviews.dismiss_stale_reviews` | true |
 | `required_pull_request_reviews.require_code_owner_reviews` | false |
 | `required_conversation_resolution` | enabled |
-| `required_status_checks` | none |
-| `required_status_checks.strict` | false |
+| `required_status_checks.contexts` | `[]` — no check is required |
+| `required_status_checks.strict` | `false` |
 | `allow_force_pushes` | disabled |
 | `allow_deletions` | disabled |
 
@@ -195,7 +201,7 @@ check. Upstream ADR-0016 says the opposite:
 restates both: the release-only path is a delivery rule, not a protection
 setting, and a fixed universal required status check name is not assumed.
 
-**Intended: `required_status_checks` stays empty, and the release-only path is
+**Intended: `required_status_checks.contexts` stays empty, and the release-only path is
 enforced by a merge-executor preflight** — `base == main` and
 `head == current release-*` verified immediately before the merge, combined
 with explicit merge authorization and current-SHA validation evidence. That
