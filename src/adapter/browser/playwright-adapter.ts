@@ -71,6 +71,18 @@ export interface CloseDiagnostics {
   readonly browserConnectedAfter: boolean;
 }
 
+/**
+ * Diagnostic for the most recent `open()` call. This is deliberately
+ * observational only: #37 must capture the real failing phase before it
+ * decides whether any launch retry is justified.
+ */
+export interface OpenDiagnostics {
+  readonly launchAttempts: number;
+  readonly status: 'success' | 'failure';
+  readonly phase: 'launch' | 'newContext' | 'newPage' | 'goto' | 'ready';
+  readonly message?: string;
+}
+
 const DEFAULT_VIEWPORT = { width: 1280, height: 800 } as const;
 const DEFAULT_ACTION_TIMEOUT_MS = 10_000;
 const DEFAULT_SETTLE_GRACE_MS = 250;
@@ -91,6 +103,7 @@ export class PlaywrightAdapter implements BrowserAdapter {
   private networkLog: Array<{ method: string; url: string; status: number; ts: string }> = [];
   private recentActions: RecordedAction[] = [];
   private lastClose: CloseDiagnostics | null = null;
+  private lastOpen: OpenDiagnostics | null = null;
 
   private readonly headless: boolean;
   private readonly defaultViewport: { width: number; height: number };
@@ -112,8 +125,10 @@ export class PlaywrightAdapter implements BrowserAdapter {
       throw new AdapterError('playwright open called while a browser is already open', 'playwright', { url });
     }
     this.viewport = { ...(viewport ?? this.defaultViewport) };
-    let phase = 'launch';
+    let phase: OpenDiagnostics['phase'] = 'launch';
+    let launchAttempts = 0;
     try {
+      launchAttempts += 1;
       this.browser = await chromium.launch({ headless: this.headless });
       phase = 'newContext';
       this.context = await this.browser.newContext({
@@ -133,7 +148,18 @@ export class PlaywrightAdapter implements BrowserAdapter {
       }
       this.currentUrl = this.page.url();
       this.currentTitle = await this.page.title();
+      this.lastOpen = {
+        launchAttempts,
+        status: 'success',
+        phase: 'ready',
+      };
     } catch (err) {
+      this.lastOpen = {
+        launchAttempts,
+        status: 'failure',
+        phase,
+        message: describeError(err),
+      };
       let teardownErrors: string[] = [];
       try {
         await this.close();
@@ -320,6 +346,10 @@ export class PlaywrightAdapter implements BrowserAdapter {
 
   __lastCloseForTest(): CloseDiagnostics | null {
     return this.lastClose;
+  }
+
+  __lastOpenForTest(): OpenDiagnostics | null {
+    return this.lastOpen;
   }
 
   __resetRecentForTest(): void {
