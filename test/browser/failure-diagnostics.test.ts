@@ -70,6 +70,51 @@ async function closedPortUrl(): Promise<string> {
  * A real browser against a real page that breaks on the second
  * observation, i.e. the "it worked, then it didn't" shape.
  */
+/**
+ * Drives a real `PlaywrightAdapter` whose browser-level screenshot call
+ * always fails with the transient protocol error captured in #37, so the
+ * bounded screenshot budget is genuinely exhausted on a real page.
+ *
+ * The page is patched white-box: this is a browser-level fault that cannot be
+ * produced from outside the adapter, and no production surface is added for it.
+ */
+class ScreenshotAlwaysFailsAdapter implements BrowserAdapter {
+  readonly adapterId = 'playwright-screenshot-fails';
+  readonly screenshotCalls: number[] = [];
+
+  constructor(private readonly inner = new PlaywrightAdapter()) {}
+
+  async open(url: string, viewport?: { width: number; height: number }): Promise<void> {
+    await this.inner.open(url, viewport);
+    const page = (this.inner as unknown as { page: import('playwright').Page | null }).page;
+    if (!page) throw new Error('inner adapter page is null after a successful open');
+    const original = page.screenshot.bind(page);
+    page.screenshot = (async () => {
+      this.screenshotCalls.push(0);
+      throw new Error(
+        'page.screenshot: Protocol error (Page.captureScreenshot): Unable to capture screenshot',
+      );
+    }) as typeof page.screenshot;
+    void original;
+  }
+
+  async observe(stepIndex: number) {
+    return this.inner.observe(stepIndex);
+  }
+
+  async execute(action: Parameters<BrowserAdapter['execute']>[0]) {
+    return this.inner.execute(action);
+  }
+
+  async close(): Promise<void> {
+    await this.inner.close();
+  }
+
+  screenshotDiagnostics() {
+    return this.inner.__screenshotDiagnosticsForTest();
+  }
+}
+
 class BreaksMidRunAdapter implements BrowserAdapter {
   readonly adapterId = 'playwright-breaks';
   private steps = 0;
@@ -202,6 +247,53 @@ describe('browser failure diagnostics', () => {
     expect(run.stderr).toContain('u-sekai:');
     expect(run.stderr).toContain(deadUrl);
     expect(run.stderr).toMatch(/ERR_CONNECTION_REFUSED|ECONNREFUSED|refused/i);
+  }, 180_000);
+
+  it('exhausting the screenshot budget fails the run closed and persists the diagnostic', async () => {
+    const def = await loadExperiment(fixture);
+    const adapters: ScreenshotAlwaysFailsAdapter[] = [];
+    const { result, runId } = await runExperiment({
+      experiment: { ...def, outDir },
+      adapterFactory: () => {
+        const adapter = new ScreenshotAlwaysFailsAdapter();
+        adapters.push(adapter);
+        return adapter;
+      },
+      resolveTargetUrl: () => server.baseUrl,
+    });
+
+    const reasons = Object.values(result.terminationReasons);
+    // The recovery is bounded, so exhaustion must terminate the participant as
+    // a runtime failure. A recovered-or-silent success here would mean the
+    // gate could go green on a broken browser.
+    expect(reasons, `runtimeErrors=${JSON.stringify(result.evidence.runtimeErrors)}`).toEqual(
+      def.participants.map(() => 'error'),
+    );
+
+    // The diagnostic survives into the run artifact, not just the log, so the
+    // failure is diagnosable from the evidence alone.
+    const runtimeErrors = result.evidence.runtimeErrors;
+    expect(runtimeErrors).toHaveLength(def.participants.length);
+    for (const entry of runtimeErrors) {
+      expect(entry.where).toMatch(/^participant=/);
+      expect(entry.message).toContain('playwright observe failed during screenshot');
+      expect(entry.message).toContain('after 2 attempt(s)');
+      expect(entry.message).toContain('Unable to capture screenshot');
+    }
+
+    // Bounded per observe() call, and recorded as evidence.
+    for (const adapter of adapters) {
+      const diagnostics = adapter.screenshotDiagnostics();
+      expect(diagnostics.length).toBeGreaterThan(0);
+      expect(diagnostics.every((d) => d.attempts === 2 && d.status === 'failure')).toBe(true);
+    }
+
+    // No screenshot may exist for a step whose capture never succeeded.
+    const runDir = path.join(outDir, runId);
+    for (const p of def.participants) {
+      const shots = path.join(runDir, 'screenshots', p.id);
+      expect(existsSync(shots) ? await fs.readdir(shots) : []).toEqual([]);
+    }
   }, 180_000);
 
   it('terminates every participant with error when the browser breaks mid-run', async () => {
