@@ -96,6 +96,13 @@ Flags (run):
  * list of known failure reasons. A terminal reason that this build does not
  * know about therefore fails closed (exit 2) instead of silently reporting
  * success, which is what a new failure reason needs to mean.
+ *
+ * This set is intentionally wider than the two reasons a participant
+ * actually reaches today (`finish`, `stepBudgetExceeded`), which is what the
+ * README documents. `finishFromObserver` and `finishFromSelfReport` are
+ * declared in the domain termination-reason union but no runtime path emits
+ * them yet; they are listed here so that a finish variant is never reported
+ * as a failure if one is wired up later.
  */
 const SUCCESSFUL_TERMINATION_REASONS: ReadonlySet<string> = new Set([
   'finish',
