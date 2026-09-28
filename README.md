@@ -155,9 +155,18 @@ A participant can also terminate as `reasonerFailure`, when a Reasoner
 structured-output failure is recoverable but exhausted. It is recorded as a
 `reasoner.failure` evidence event and is deliberately **distinct** from
 `capabilityViolation`, so a provider defect is never reported as a
-participant capability defect; see ADR-0008. Only a real
-`capabilityViolation` maps to exit code 3 — a `reasonerFailure` alone still
-exits 0.
+participant capability defect; see ADR-0008. `reasonerFailure` is a runtime
+failure and therefore maps to exit code `2`, not `0` and not `3`; only a real
+`capabilityViolation` maps to exit code `3`.
+
+A participant that ends in a runtime failure — an adapter error, a Reasoner
+failure, or any other terminal reason — is reported as exit code `2`, and
+its diagnostic is persisted in the run artifact under
+`evidence.runtimeErrors`. Exit code `0` is returned only when **every**
+participant reached a legitimate terminal state (`finish` or
+`stepBudgetExceeded`): a run in which some participants finished and others
+failed did not fully succeed, so it also exits `2`. The failed participants
+and their reasons are additionally listed on stderr.
 
 ### Quality gate
 

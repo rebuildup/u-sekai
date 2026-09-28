@@ -1,0 +1,146 @@
+name: release-publish
+
+# Publishes the version-aligned Git tag and GitHub Release of a u-sekai release.
+#
+# Source delivery is unchanged by this workflow: a merged
+# `release-<major>-<minor>-<patch> -> main` pull request *is* the released
+# source state, and `main` stays protected (ADR-0003). This workflow is an
+# additive artifact layer on top of that state and never needs a direct source
+# change to `main`.
+#
+# Trigger: `workflow_dispatch` only, and that is a deliberate decision.
+#   * Publishing a public tag and a public release is effectively irreversible
+#     and is an authority-bearing act. u-sekai keeps "ready" and "authorized"
+#     as separate states, so a human explicitly invoking the workflow is the
+#     authority boundary.
+#   * `release: published` is rejected because it would make the GitHub Release
+#     the source of the release. Here `package.json#version` at the release
+#     commit is the single source of truth and the Release is a derived
+#     artifact.
+#   * `push` to `main` is rejected because it would race CI (the release gate
+#     must already be green) and would publish before a human confirmed that
+#     the merged release pull request is the intended release.
+#   `workflow_dispatch` also always runs the workflow definition and the
+#   verification script from the default branch, so a backfill of an older
+#   release can be verified with the current tooling.
+#
+# `dry_run` defaults to true: the first invocation of a release prints the
+# verification verdict and the exact plan without mutating anything. Publishing
+# requires an explicit `dry_run: false`.
+#
+# The switch is read fail-closed. `gh workflow run -f dry_run=<value>` and the
+# REST dispatch endpoint accept arbitrary strings, so "anything that is not the
+# literal `false`" means dry run. Comparing against `true` instead would let
+# `dry_run=0`, `dry_run=yes`, or an empty value publish a public tag.
+#
+# Non-scope: npm registry publication, binary packaging, deployment, and
+# automatic version incrementing.
+
+on:
+  workflow_dispatch:
+    inputs:
+      sha:
+        description: 'Target release commit. Defaults to the head of the default branch.'
+        required: false
+        type: string
+      dry_run:
+        description: 'Verify and print the plan only. Set to false to publish.'
+        required: false
+        default: true
+        type: boolean
+      required_checks:
+        description: 'Comma-separated check-run names that must be successful. Defaults to the committed release gate.'
+        required: false
+        type: string
+      # There is deliberately no `require_protection_configured` input. The
+      # branch-protection cross-check needs Administration: read, which
+      # `GITHUB_TOKEN` cannot grant, so from this workflow it could never
+      # succeed. It is a local-only cross-check behind
+      # `--cross-check-protection` (ADR-0010), and the committed release gate
+      # is the only definition of the gate here.
+
+# Least privilege: `contents: write` creates the tag and the release,
+# `checks: read` reads the check runs the release gate is decided from.
+# No other token scope is requested and no long-lived credential is used.
+permissions:
+  contents: write
+  checks: read
+
+concurrency:
+  group: release-publish
+  cancel-in-progress: false
+
+jobs:
+  release-publish:
+    name: release-publish
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      - name: Verify the release
+        id: verify
+        env:
+          INPUT_SHA: ${{ inputs.sha }}
+          INPUT_DRY_RUN: ${{ inputs.dry_run }}
+          INPUT_REQUIRED_CHECKS: ${{ inputs.required_checks }}
+        run: |
+          set -euo pipefail
+
+          # Fail closed: an unset, empty, or unexpectedly spelled value stays a
+          # dry run. Only the exact string `false` adds `--apply`.
+          INPUT_DRY_RUN="${INPUT_DRY_RUN:-true}"
+
+          args=()
+          if [ -n "${INPUT_SHA}" ]; then
+            args+=(--sha "${INPUT_SHA}")
+          fi
+          if [ "${INPUT_DRY_RUN}" = "false" ]; then
+            args+=(--apply)
+          fi
+          if [ -n "${INPUT_REQUIRED_CHECKS}" ]; then
+            while IFS= read -r check; do
+              [ -n "$check" ] && args+=(--required-check "$check")
+            done < <(printf '%s' "${INPUT_REQUIRED_CHECKS}" | tr ',' '\n' | sed 's/^ *//; s/ *$//')
+          fi
+
+          # `"${args[@]}"` without a `-` default: the plain form expands an
+          # empty array to *no* arguments, while `"${args[@]-}"` expands it to
+          # one empty argument, which the script would reject as an unknown
+          # option. A default dry run passes no arguments at all.
+          echo "mode: dry_run=${INPUT_DRY_RUN}" >> "${GITHUB_STEP_SUMMARY}"
+          printf 'arguments: node scripts/verify-release.mjs' >> "${GITHUB_STEP_SUMMARY}"
+          printf ' %s' ${args[@]+"${args[@]}"} >> "${GITHUB_STEP_SUMMARY}"
+          printf '\n' >> "${GITHUB_STEP_SUMMARY}"
+          echo '```' >> "${GITHUB_STEP_SUMMARY}"
+
+          # A non-zero exit here fails the job before any artifact is created.
+          # `set -o pipefail` keeps a refused verdict from being swallowed by
+          # `tee`: the pipeline exit status is the script exit status.
+          node scripts/verify-release.mjs ${args[@]+"${args[@]}"} 2>&1 | tee -a "${GITHUB_STEP_SUMMARY}"
+
+          echo '```' >> "${GITHUB_STEP_SUMMARY}"
+      - name: Summarise the outcome
+        if: always()
+        env:
+          INPUT_DRY_RUN: ${{ inputs.dry_run }}
+        run: |
+          {
+            echo
+            echo "### release-publish"
+            echo
+            if [ "${INPUT_DRY_RUN:-true}" = "false" ]; then
+              echo "Publish run finished. Check the step log above for the verdict and the created artifacts."
+            else
+              echo "Dry run: nothing was created. Re-run with \`dry_run: false\` to publish."
+            fi
+          } >> "${GITHUB_STEP_SUMMARY}"

@@ -56,9 +56,18 @@ export interface ObserverObservation {
   readonly domHtml: string;
   readonly console: ReadonlyArray<{ level: string; text: string; ts: string }>;
   readonly network: ReadonlyArray<{ method: string; url: string; status: number; ts: string }>;
+  /**
+   * Interactive elements for the privileged observer view. `selector`
+   * is OPTIONAL: an adapter may only report a selector it verified
+   * resolves back to the same element in the live page. Adapters that
+   * cannot prove that (or that do not have a real DOM) omit the field
+   * instead of fabricating a path. The participant view is derived by
+   * `applyParticipantObservation`, which drops `selector` entirely, so
+   * an optional field here cannot become a participant-visible leak.
+   */
   readonly interactiveRegions: ReadonlyArray<{
-    selector: string;
-    label: string;
-    bbox: { x: number; y: number; width: number; height: number };
+    readonly selector?: string;
+    readonly label: string;
+    readonly bbox: { x: number; y: number; width: number; height: number };
   }>;
 }

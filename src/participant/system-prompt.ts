@@ -13,7 +13,17 @@
  * sees only the participant's current memory state (which is the same
  * window), never the experiment trace. The observer prompt sees the
  * full trace but never sees participant memory.
+ *
+ * The marker strings below are imported from the structured-output
+ * boundary (ADR-0008) so the prompt text and the contract selector can
+ * never drift apart. The prompt is not the enforcement mechanism:
+ * validation happens in code.
  */
+
+import {
+  PARTICIPANT_ACTION_OUTPUT_MARKER,
+  SELF_REPORT_OUTPUT_MARKER,
+} from '../reasoner/structured.js';
 
 export function participantActionSystemPrompt(args: { memoryDescription: string }): string {
   return [
@@ -29,14 +39,14 @@ export function participantActionSystemPrompt(args: { memoryDescription: string 
     'You may NOT ask for selectors, DOM trees, or internal page metadata. If the page is ambiguous, use wait or clickByCoords on a region you can see.',
     '',
     `Memory: ${args.memoryDescription}. Prior steps you saw may be included in subsequent prompts.`,
-    'Pick exactly one primitive per call. Reply with a single JSON object only — no prose, no code fences.',
+    PARTICIPANT_ACTION_OUTPUT_MARKER + '. Reply with a single JSON object only — no prose, no code fences.',
   ].join('\n');
 }
 
 export function participantSelfReportSystemPrompt(): string {
   return [
     'You just finished an interaction with a web product as a research participant.',
-    'Emit a JSON object matching the SelfReport shape:',
+    SELF_REPORT_OUTPUT_MARKER + ':',
     '{',
     '  "goal": string,',
     '  "productUnderstanding": string,',
@@ -50,5 +60,5 @@ export function participantSelfReportSystemPrompt(): string {
   ].join('\n');
 }
 
-export const PARTICIPANT_ACTION_MARKER = 'pick exactly one primitive per call';
-export const SELF_REPORT_MARKER = 'Emit a JSON object matching the SelfReport shape';
+export const PARTICIPANT_ACTION_MARKER = PARTICIPANT_ACTION_OUTPUT_MARKER;
+export const SELF_REPORT_MARKER = SELF_REPORT_OUTPUT_MARKER;

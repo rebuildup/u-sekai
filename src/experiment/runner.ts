@@ -9,13 +9,17 @@ import type {
 import type {
   RunEvent,
   BehavioralEvidence,
+  ReasonerFailureEvent,
+  ReasonerFailureEvidence,
   TerminationEvent,
   StoredObservation,
 } from '../domain/evidence.js';
 import type { RunResult } from '../domain/result.js';
 import type { SelfReport } from '../domain/self-report.js';
 import type { Reasoner } from '../domain/reasoner.js';
+import type { ReasonerConfig } from '../domain/experiment.js';
 import type { BrowserAdapter } from '../adapter/browser/interface.js';
+import type { StructuredOutputPolicy } from '../reasoner/structured.js';
 import { InMemoryRecorder } from '../evidence/recorder.js';
 import { FileArtifactIO } from '../evidence/artifact.js';
 import { createReasoner } from '../reasoner/interface.js';
@@ -33,11 +37,41 @@ export interface RunExperimentOptions {
     readonly perParticipant?: Partial<Record<string, { provider: 'scripted' | 'anthropic' }>>;
     readonly observer?: { provider: 'scripted' | 'anthropic' };
   };
+  /**
+   * Overrides Reasoner construction. Defaults to `createReasoner`; an
+   * integration seam that lets a test drive the whole run with a
+   * deterministic provider and no live credential.
+   */
+  readonly reasonerFactory?: (config: ReasonerConfig, ctx: { participantLabel?: string; role: 'participant' | 'observer' | 'selfReport' }) => Reasoner;
+  /** Overrides the structured-output recovery policy for every Reasoner channel (ADR-0008). */
+  readonly structuredOutputPolicy?: Partial<StructuredOutputPolicy>;
 }
 
 export interface RunExperimentResult {
   readonly result: RunResult;
   readonly runId: string;
+}
+
+/**
+ * A participant-scoped failure captured in `evidence.runtimeErrors`.
+ */
+export interface RuntimeErrorEntry {
+  readonly ts: string;
+  readonly where: string;
+  readonly message: string;
+}
+
+/**
+ * What the runner keeps from one participant run. `error` is the runtime
+ * diagnostic returned by `runParticipant`; it is the only place a failed
+ * participant's reason survives, so it must not be dropped here.
+ */
+interface CollectedParticipant {
+  readonly participant: ExperimentDefinition['participants'][number];
+  readonly selfReport: SelfReport;
+  readonly terminationReason: TerminationEvent['reason'];
+  readonly observations: StoredObservation[];
+  readonly error?: string;
 }
 
 export async function runExperiment(opts: RunExperimentOptions): Promise<RunExperimentResult> {
@@ -56,13 +90,9 @@ export async function runExperiment(opts: RunExperimentOptions): Promise<RunExpe
   });
 
   const targetUrl = opts.resolveTargetUrl(opts.experiment.environment);
+  const makeReasoner = opts.reasonerFactory ?? createReasoner;
 
-  const participants: Array<{
-    participant: ExperimentDefinition['participants'][number];
-    selfReport: SelfReport;
-    terminationReason: TerminationEvent['reason'];
-    observations: StoredObservation[];
-  }> = [];
+  const participants: CollectedParticipant[] = [];
 
   for (const p of opts.experiment.participants) {
     const adapter = opts.adapterFactory(opts.experiment);
@@ -70,7 +100,7 @@ export async function runExperiment(opts: RunExperimentOptions): Promise<RunExpe
     const reasonerCfg = reasonerOverride
       ? { ...p.reasoner, ...reasonerOverride }
       : p.reasoner;
-    const reasoner: Reasoner = createReasoner(reasonerCfg, {
+    const reasoner: Reasoner = makeReasoner(reasonerCfg, {
       role: 'participant',
       participantLabel: `${opts.experiment.id}:${p.id}`,
     });
@@ -84,6 +114,7 @@ export async function runExperiment(opts: RunExperimentOptions): Promise<RunExpe
       recorder,
       opts.experiment.userStory,
       opts.experiment.budget.maxStepsPerParticipant,
+      opts.structuredOutputPolicy,
     );
     participants.push(participantObs);
   }
@@ -92,13 +123,14 @@ export async function runExperiment(opts: RunExperimentOptions): Promise<RunExpe
   const observerConfig = opts.reasonerOverrides?.observer
     ? { ...opts.experiment.observer, ...opts.reasonerOverrides.observer }
     : opts.experiment.observer;
-  const observerReasoner = createReasoner(observerConfig, { role: 'observer' });
+  const observerReasoner = makeReasoner(observerConfig, { role: 'observer' });
   const observerReport = await runObserver({
     runId,
     reasoner: observerReasoner,
     recorder,
     userStory: opts.experiment.userStory,
     participants: opts.experiment.participants.map((p) => ({ participantId: p.id, personaPrompt: p.personaPrompt })),
+    ...(opts.structuredOutputPolicy !== undefined ? { structuredOutputPolicy: opts.structuredOutputPolicy } : {}),
   });
 
   const endedAt = new Date().toISOString();
@@ -148,12 +180,8 @@ async function runParticipantAndCollect(
   recorder: InMemoryRecorder,
   userStory: string,
   budget: number,
-): Promise<{
-  participant: ExperimentDefinition['participants'][number];
-  selfReport: SelfReport;
-  terminationReason: TerminationEvent['reason'];
-  observations: StoredObservation[];
-}> {
+  structuredOutputPolicy?: Partial<StructuredOutputPolicy>,
+): Promise<CollectedParticipant> {
   const observations: StoredObservation[] = [];
 
   const outcome = await runParticipant({
@@ -174,6 +202,7 @@ async function runParticipantAndCollect(
         observation: obs,
       });
     },
+    ...(structuredOutputPolicy !== undefined ? { structuredOutputPolicy } : {}),
   });
 
   const lastEvent = (await recorder.snapshot())
@@ -186,6 +215,10 @@ async function runParticipantAndCollect(
     selfReport: outcome.selfReport,
     terminationReason: reason,
     observations,
+    // `outcome.error` is the participant's failure diagnostic. Dropping it
+    // here is what made a failed run indistinguishable from a clean one at
+    // every consumer surface.
+    ...(outcome.error !== undefined && outcome.error !== '' ? { error: outcome.error } : {}),
   };
 }
 
@@ -193,12 +226,7 @@ function buildBehavioralEvidence(
   runId: string,
   startedAt: string,
   endedAt: string,
-  participants: ReadonlyArray<{
-    participant: ExperimentDefinition['participants'][number];
-    selfReport: SelfReport;
-    terminationReason: TerminationEvent['reason'];
-    observations: StoredObservation[];
-  }>,
+  participants: ReadonlyArray<CollectedParticipant>,
   events: ReadonlyArray<RunEvent>,
 ): BehavioralEvidence {
   const stepCountByParticipant: Record<string, number> = {};
@@ -234,7 +262,12 @@ function buildBehavioralEvidence(
     terminationReasonByParticipant[p.participant.id] = p.terminationReason;
   }
 
-  const runtimeErrors = events
+  // `runtimeErrors` is the run's runtime-error rollup. It starts from the
+  // typed `capability.violation` events and then adds the per-participant
+  // runtime diagnostics that `runParticipant` returned, so a failed
+  // participant is diagnosable from the artifact alone instead of only from
+  // the process exit code.
+  const runtimeErrors: RuntimeErrorEntry[] = events
     .filter((e) => e.type === 'capability.violation')
     .map((e) => {
       const ce = e as Extract<typeof e, { type: 'capability.violation' }>;
@@ -245,6 +278,48 @@ function buildBehavioralEvidence(
       };
     });
 
+  // A participant that failed for a reason that produced no typed event
+  // (an adapter defect, for example) still has to be diagnosable from the
+  // artifact alone, so its diagnostic joins the same rollup. An entry that a
+  // `capability.violation` event already carries is not counted twice.
+  for (const p of participants) {
+    if (p.error === undefined || p.error === '') continue;
+    const participantId = p.participant.id;
+    if (isRuntimeErrorAlreadyRecorded(events, participantId, p.error)) continue;
+    const lastStepIndex = lastStepIndexOf(events, participantId);
+    const terminationEvent = events
+      .filter((e) => e.type === 'termination' && e.participantId === participantId)
+      .at(-1);
+    runtimeErrors.push({
+      ts: terminationEvent && terminationEvent.type === 'termination' ? terminationEvent.ts : endedAt,
+      where: `participant=${participantId}${lastStepIndex === undefined ? '' : ` step=${lastStepIndex}`}`,
+      message: p.error,
+    });
+  }
+
+  // Structured Reasoner failures are their own evidence channel: a
+  // provider or contract defect must not be read as a participant
+  // capability defect, and a recovered failure must stay visible (ADR-0008).
+  const reasonerFailures: ReasonerFailureEvidence[] = events
+    .filter((e): e is ReasonerFailureEvent => e.type === 'reasoner.failure')
+    .map((f) => ({
+      ts: f.ts,
+      where:
+        `channel=${f.channel} outputKind=${f.outputKind} participant=${f.participantId ?? 'n/a'} ` +
+        `step=${f.stepIndex ?? 'n/a'} attempt=${f.attempt}/${f.maxAttempts}`,
+      channel: f.channel,
+      outputKind: f.outputKind,
+      failureKind: f.failureKind,
+      provider: f.provider,
+      modelId: f.modelId,
+      attempt: f.attempt,
+      maxAttempts: f.maxAttempts,
+      retryable: f.retryable,
+      recoveryOutcome: f.recoveryOutcome,
+      message: f.message,
+    }));
+
+
   return {
     runId,
     startedAt,
@@ -254,10 +329,58 @@ function buildBehavioralEvidence(
     actionSequencesByParticipant,
     navigationsByParticipant,
     runtimeErrors,
+    reasonerFailures,
     terminationReasonByParticipant,
     participantConfigurations,
     experimentSummaryHash: fnv1aHex(events.map((e) => `${e.type}@${e.ts}`).join('|')),
   };
+}
+
+/**
+ * Highest step index recorded for a participant, or `undefined` when the
+ * participant produced no step event (for example, a target it could not
+ * even open).
+ */
+function lastStepIndexOf(
+  events: ReadonlyArray<RunEvent>,
+  participantId: string,
+): number | undefined {
+  let last: number | undefined;
+  for (const e of events) {
+    if (!('participantId' in e) || e.participantId !== participantId) continue;
+    if (!('stepIndex' in e) || typeof e.stepIndex !== 'number') continue;
+    if (last === undefined || e.stepIndex > last) last = e.stepIndex;
+  }
+  return last;
+}
+
+/**
+ * True when a `capability.violation` event for this participant already
+ * carries exactly this diagnostic, i.e. the runtime error is the same
+ * failure and already has its own `runtimeErrors` entry. Matching on the
+ * message rather than on the termination reason keeps a *different* failure
+ * from being suppressed just because the participant ended in the same way.
+ */
+export function isRuntimeErrorAlreadyRecorded(
+  events: ReadonlyArray<RunEvent>,
+  participantId: string,
+  message: string,
+): boolean {
+  return events.some(
+    (e) => e.type === 'capability.violation' && e.participantId === participantId && e.reason === message,
+  );
+}
+
+const PARTICIPANT_IN_WHERE = /(?:^|\s)participant=(\S+)/;
+
+/** The `runtimeErrors` entries that belong to one participant. */
+export function runtimeErrorsForParticipant(
+  evidence: BehavioralEvidence,
+  participantId: string,
+): ReadonlyArray<RuntimeErrorEntry> {
+  return evidence.runtimeErrors.filter(
+    (e) => PARTICIPANT_IN_WHERE.exec(e.where)?.[1] === participantId,
+  );
 }
 
 async function writeArtifact(
@@ -265,11 +388,7 @@ async function writeArtifact(
   runId: string,
   experiment: ExperimentDefinition,
   recorder: InMemoryRecorder,
-  participants: ReadonlyArray<{
-    participant: ExperimentDefinition['participants'][number];
-    selfReport: SelfReport;
-    observations: StoredObservation[];
-  }>,
+  participants: ReadonlyArray<CollectedParticipant>,
   observerReport: import('../domain/observer.js').ObserverReport,
   result: RunResult,
 ): Promise<void> {
@@ -312,11 +431,18 @@ async function writeArtifact(
 
   await io.writeObserverReport(observerReport);
   await io.writeResult(result);
-  await io.writeSummary(renderSummary(result));
+  await io.writeSummary(renderSummary(result, participants));
   await io.finalize();
 }
 
-function renderSummary(result: RunResult): string {
+function renderSummary(result: RunResult, participants: ReadonlyArray<CollectedParticipant>): string {
+  const diagnosticsByParticipant = new Map<string, string[]>();
+  for (const p of participants) {
+    if (p.error !== undefined && p.error !== '') {
+      diagnosticsByParticipant.set(p.participant.id, [p.error]);
+    }
+  }
+
   const lines: string[] = [];
   lines.push(`# Run ${result.runId}`);
   lines.push('');
@@ -326,7 +452,11 @@ function renderSummary(result: RunResult): string {
   lines.push(`- Ended: ${result.endedAt}`);
   lines.push('');
   for (const [id, reason] of Object.entries(result.terminationReasons)) {
-    lines.push(`- Participant ${id}: terminated (${reason})`);
+    // A failed participant must be readable here without opening
+    // `result.json`: `terminated (error)` on its own does not say why.
+    const diagnostic = diagnosticsByParticipant.get(id);
+    const suffix = diagnostic === undefined ? '' : ` -- ${singleLine(diagnostic[0] ?? '')}`;
+    lines.push(`- Participant ${id}: terminated (${reason})${suffix}`);
   }
   lines.push('');
   lines.push('## Self-reports');
@@ -346,4 +476,10 @@ function renderSummary(result: RunResult): string {
     lines.push(`- [${f.severity}] (${f.category}) ${f.summary}`);
   }
   return lines.join('\n');
+}
+
+/** Collapse a diagnostic to one line so a bullet stays one bullet. */
+function singleLine(value: string): string {
+  const collapsed = value.replace(/\s+/g, ' ').trim();
+  return collapsed.length > 0 ? collapsed : '(no diagnostic recorded)';
 }
