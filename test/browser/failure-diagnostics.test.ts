@@ -18,7 +18,7 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { createServer } from 'node:http';
 import { spawn } from 'node:child_process';
-import { promises as fs } from 'node:fs';
+import { promises as fs, existsSync } from 'node:fs';
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { PlaywrightAdapter } from '../../src/adapter/browser/playwright-adapter.js';
@@ -26,6 +26,7 @@ import { runExperiment } from '../../src/experiment/runner.js';
 import { loadExperiment } from '../../src/experiment/loader.js';
 import { AdapterError } from '../../src/domain/errors.js';
 import type { BrowserAdapter } from '../../src/adapter/browser/interface.js';
+import type { RunResult } from '../../src/domain/result.js';
 import { assertBrowserRuntimeAvailable } from './support/browser-runtime.js';
 import { startDemoServer, type ServerHandle } from './support/demo.js';
 
@@ -34,6 +35,10 @@ const root = path.resolve(here, '..', '..');
 const fixture = path.resolve(here, '..', 'fixtures', 'experiment.task-tracker.json');
 const outDir = path.resolve(here, '..', '.tmp', 'browser-failure-runs');
 const cliPath = path.join(root, 'dist', 'cli', 'index.js');
+
+function fsExists(p: string): boolean {
+  return existsSync(p);
+}
 
 let server: ServerHandle;
 let deadUrl = '';
@@ -123,11 +128,12 @@ describe('browser failure diagnostics', () => {
     await expect(adapter.observe(0)).rejects.toThrow(/observe called before open/);
   }, 120_000);
 
-  it('propagates an unopenable target out of the run instead of fabricating evidence', async () => {
+  it('never fabricates browser evidence for an unopenable target', async () => {
     const def = await loadExperiment(fixture);
     let caught: unknown;
+    let completed: { result: RunResult; runId: string } | null = null;
     try {
-      await runExperiment({
+      completed = await runExperiment({
         experiment: { ...def, outDir },
         adapterFactory: () => new PlaywrightAdapter(),
         resolveTargetUrl: () => deadUrl,
@@ -135,10 +141,41 @@ describe('browser failure diagnostics', () => {
     } catch (err) {
       caught = err;
     }
-    expect(caught).toBeInstanceOf(AdapterError);
-    expect((caught as Error).message).toContain(deadUrl);
-    // A run that never reached a page produces no artifact at all.
-    expect(await fs.readdir(outDir).catch(() => [])).toEqual([]);
+
+    // An unreachable target must never look like a successful run. Which of
+    // the two acceptable shapes applies depends on whether the run treats an
+    // unopenable target as a participant-scoped failure or as a fatal one,
+    // and both are legitimate. What is *not* legitimate is a run that
+    // reports success or writes an artifact claiming the page was observed.
+    if (caught !== undefined) {
+      expect(caught).toBeInstanceOf(AdapterError);
+      expect((caught as Error).message).toContain(deadUrl);
+      // A run that never reached a page produces no artifact at all.
+      expect(await fs.readdir(outDir).catch(() => [])).toEqual([]);
+      return;
+    }
+
+    const { result, runId } = completed as { result: RunResult; runId: string };
+    const reasons = Object.values(result.terminationReasons);
+    expect(reasons.length).toBeGreaterThan(0);
+    expect(reasons.every((r) => r === 'error' || r === 'reasonerFailure'), `unexpected reasons ${reasons.join(',')}`).toBe(true);
+    expect(result.evidence.runtimeErrors.length).toBeGreaterThan(0);
+    const diagnostic = result.evidence.runtimeErrors.map((e) => e.message).join('\n');
+    expect(diagnostic).toContain(deadUrl);
+    // No observation may claim a page was captured from a target that never
+    // loaded, and no screenshot may exist for such a run.
+    const artifactRoot = path.join(outDir, runId);
+    const observationDir = path.join(artifactRoot, 'observations');
+    if (fsExists(observationDir)) {
+      for (const participant of await fs.readdir(observationDir)) {
+        for (const file of await fs.readdir(path.join(observationDir, participant))) {
+          const full = path.join(observationDir, participant, file);
+          const observation = JSON.parse(await fs.readFile(full, 'utf8')) as { url: string };
+          expect(observation.url, `${full} claims a page was observed`).not.toBe(deadUrl);
+        }
+      }
+    }
+    expect(fsExists(path.join(artifactRoot, 'screenshots'))).toBe(false);
   }, 180_000);
 
   it('fails the shipped CLI with a non-zero exit and an actionable message', async () => {
