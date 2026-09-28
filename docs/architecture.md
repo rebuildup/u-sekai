@@ -46,6 +46,48 @@ adapters live under `src/reasoner/providers/` and translate domain
 `ReasonerRequest` -> provider-native JSON. CI uses
 `scriptedReasoner`, which is fully deterministic.
 
+## Structured Reasoner output (ADR-0008)
+
+`src/reasoner/structured.ts` is the only place a raw provider payload
+becomes a typed domain value. It covers all three structured outputs
+(`action`, `selfReport`, `observerFindings`) and classifies every failure
+into exactly one of four kinds:
+
+| Failure kind | Raised as | Retried |
+| --- | --- | --- |
+| `providerTransport` — network error, timeout, non-2xx HTTP | `StructuredOutputError` | only when transient: no status, 429, or 5xx |
+| `providerParse` — no JSON object in the assistant text | `StructuredOutputError` | yes |
+| `contractValidation` — JSON violates the declared contract | `StructuredOutputError` | yes |
+| `capabilityViolation` — parsed action attempts a privileged primitive | `CapabilityViolation` | never |
+
+Key rules:
+
+- A `capabilityViolation` requires a recognised privileged `kind`
+  (`selectorClick`, `evaluateJs`, `getDomTree`,
+  `readInternalMetadata`). Every other structural defect — unknown `kind`,
+  missing discriminator, wrong field type, out-of-range value — is
+  `contractValidation`. `CapabilityViolation` is never reused for a parse
+  or contract failure.
+- Recovery is bounded: `{ maxAttempts: 2, retryOn, backoffMs: 250,
+  maxTotalMs: 30_000, attemptTimeoutMs: 15_000 }`, with `maxAttempts`
+  clamped to `[1, 8]`. Exhaustion terminates with
+  `terminationReason: 'reasonerFailure'`, never with a silent fallback
+  action and never with `capabilityViolation`.
+- Runtime validation is the enforcement mechanism. System prompts
+  document the contract for the model; the marker constants that select
+  which contract applies are imported from the boundary so the two
+  cannot drift, but prompt wording is not the source of truth.
+- Each failed attempt is persisted as a `reasoner.failure` event
+  carrying `failureKind`, provider, `attempt` / `maxAttempts`,
+  `retryable`, `willRetry`, and `recoveryOutcome`
+  (`recovered` | `exhausted`) — so retry-success and retry-exhaustion are
+  distinguishable from `events.ndjson` alone. `BehavioralEvidence`
+  surfaces the same data as `reasonerFailures`.
+- Diagnostics are bounded and credential-free: excerpts are capped at
+  200 characters with credential shapes redacted, and no HTTP header,
+  request body, or API key is ever persisted. Redaction is tuned so a
+  message can still name the offending field.
+
 ## Two adapter paths (ADR-0009)
 
 | | `HttpAdapter` | `PlaywrightAdapter` |
