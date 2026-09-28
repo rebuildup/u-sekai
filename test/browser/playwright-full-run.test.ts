@@ -83,19 +83,40 @@ describe('browser full run', () => {
       })),
     };
 
+    const adapters: PlaywrightAdapter[] = [];
     const { result, runId } = await runExperiment({
       experiment,
-      adapterFactory: () => new PlaywrightAdapter(),
+      adapterFactory: () => {
+        const adapter = new PlaywrightAdapter();
+        adapters.push(adapter);
+        return adapter;
+      },
       resolveTargetUrl: () => server.baseUrl,
     });
+
+    const openDiagnostics = adapters.map((adapter) => adapter.__lastOpenForTest());
+    const failureContext =
+      `runtimeErrors=${JSON.stringify(result.evidence.runtimeErrors)} openDiagnostics=${JSON.stringify(openDiagnostics)}`;
+
+    // Keep the launch-attempt count visible in the browser gate output.
+    // #37 intentionally captures evidence before introducing any recovery.
+    console.info(`browser launch diagnostics: ${JSON.stringify(openDiagnostics)}`);
 
     // --- participants reached a clean terminal state ----------------
     expect(Object.keys(result.terminationReasons)).toHaveLength(def.participants.length);
     for (const reason of Object.values(result.terminationReasons)) {
-      expect(['finish', 'stepBudgetExceeded']).toContain(reason);
-      expect(reason).toBe('finish');
+      expect(['finish', 'stepBudgetExceeded'], failureContext).toContain(reason);
+      expect(reason, failureContext).toBe('finish');
     }
-    expect(result.evidence.runtimeErrors).toEqual([]);
+    expect(result.evidence.runtimeErrors, failureContext).toEqual([]);
+    expect(openDiagnostics, failureContext).toHaveLength(def.participants.length);
+    for (const diagnostic of openDiagnostics) {
+      expect(diagnostic, failureContext).toEqual({
+        launchAttempts: 1,
+        status: 'success',
+        phase: 'ready',
+      });
+    }
     for (const p of result.participants) {
       expect(p.selfReport.participantId).toBe(p.participantId);
       expect(p.selfReport.capturedAt).not.toBe('');
