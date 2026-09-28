@@ -25,11 +25,14 @@ Tag, release branch, and Release are all derived from it
 version on the release branch before the release PR is opened**, otherwise
 CI fails on the release PR and the version cannot be published later.
 
+Substitute the version you are actually releasing; the worked example below is
+for the current 0.3.0 line.
+
 ```bash
-git switch release-0-2-0
-npm version 0.2.0 --no-git-tag-version   # updates package.json + package-lock.json
-git commit -am "chore(0.2.0): bump version to 0.2.0"
-git push origin release-0-2-0
+git switch release-0-3-0
+npm version 0.3.0 --no-git-tag-version   # updates package.json + package-lock.json
+git commit -am "chore(0.3.0): bump version to 0.3.0"
+git push origin release-0-3-0
 ```
 
 A `version:check` failure on a release branch always means the same thing:
