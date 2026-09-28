@@ -75,18 +75,25 @@ Negative / trade-offs:
 Operational:
 
 - The release-source check workflow is in `.github/workflows/release-source-check.yml`.
-- The branch protection API call that registers the check is reproducible
-  from the `protection-payload.json` artifact (gitignored in `.tmp/`).
-- When the workflow definition changes (e.g. renamed job), update the
-  protection's `required_status_checks.contexts` to match.
+- ~~The branch protection API call that registers the check is reproducible
+  from the `protection-payload.json` artifact (gitignored in `.tmp/`).~~
+  (Superseded — the check is not registered; see Correction.)
+- ~~When the workflow definition changes (e.g. renamed job), update the
+  protection's `required_status_checks.contexts` to match.~~
+  (Superseded — `required_status_checks` is `null`; see Correction.)
 
 ## Alternatives considered
 
-- **Branch protection only without required check**: rejected — does not
-  enforce the release-only path.
-- **Repository rulesets with push restrictions**: partial — rulesets can
+- ~~**Branch protection only without required check**: rejected — does not
+  enforce the release-only path.~~ **Superseded** — the release-only path is
+  not enforced by branch protection. It is enforced by a merge-executor
+  preflight, and the residual UI-bypass limitation is recorded rather than
+  papered over. See Correction.
+- ~~**Repository rulesets with push restrictions**: partial — rulesets can
   restrict branch names but cannot fully constrain PR head branches without
-  the workflow check.
+  the workflow check.~~ **Superseded** — the underlying platform limitation is
+  correct and is restated in the Correction, but the conclusion that a workflow
+  check must therefore become a required status check is rejected.
 - **No branch protection during research / design phase**: rejected —
   even before code exists, the repo is public and the contract should be
   established early.
@@ -129,20 +136,26 @@ them.
     "require_code_owner_reviews": false,
     "required_approving_review_count": 0
   },
-  "required_status_checks": {
-    "strict": false,
-    "contexts": []
-  },
+  "required_status_checks": null,
   "allow_force_pushes": false,
   "allow_deletions": false,
   "required_conversation_resolution": true
 }
 ```
 
-`required_status_checks` is present but carries **zero** contexts, which is how
-the API expresses "no check is required". That is deliberately different from
-omitting the key: omitting it disables status-check protection and leaves no
-place to record `strict`, so the intended `false` could not be stated.
+`required_status_checks` is `null`, which is how the API expresses **status-check
+protection disabled**. The endpoint takes `object or null` and documents
+"Set to null to disable".
+
+`null` and `{"strict": false, "contexts": []}` are different states and must not
+be conflated. `null` disables status-check protection outright.
+`{"strict": false, "contexts": []}` *enables* that protection with zero required
+contexts. The intended state here is the former, because the policy is "no
+required status checks", not "status-check protection on, requiring nothing".
+
+`strict` is therefore **not applicable** while status-check protection is
+disabled, and this ADR deliberately fixes no value for it. It becomes a
+decision at the point status-check protection is ever introduced.
 
 | Setting | Value |
 | --- | --- |
@@ -152,8 +165,8 @@ place to record `strict`, so the intended `false` could not be stated.
 | `required_pull_request_reviews.dismiss_stale_reviews` | true |
 | `required_pull_request_reviews.require_code_owner_reviews` | false |
 | `required_conversation_resolution` | enabled |
-| `required_status_checks.contexts` | `[]` — no check is required |
-| `required_status_checks.strict` | `false` |
+| `required_status_checks` | disabled (`null`) |
+| `required_status_checks.strict` | N/A — only meaningful once status-check protection is enabled |
 | `allow_force_pushes` | disabled |
 | `allow_deletions` | disabled |
 
@@ -201,7 +214,7 @@ check. Upstream ADR-0016 says the opposite:
 restates both: the release-only path is a delivery rule, not a protection
 setting, and a fixed universal required status check name is not assumed.
 
-**Intended: `required_status_checks.contexts` stays empty, and the release-only path is
+**Intended: `required_status_checks` stays disabled (`null`), and the release-only path is
 enforced by a merge-executor preflight** — `base == main` and
 `head == current release-*` verified immediately before the merge, combined
 with explicit merge authorization and current-SHA validation evidence. That
@@ -219,14 +232,25 @@ Its role is **advisory evidence that the merge-executor preflight
 corroborates**. Its name is not a mandatory governance identifier, and it is
 not registered as a required check.
 
-### 4. `strict: false` is now stated explicitly
+### 4. `strict` is not fixed while status-check protection is disabled
 
-ADR-0003 was silent on `strict`. It is `false`. `main` moves only through
-release PRs and there is a single release stream, so the staleness that
-`strict: true` guards against is excluded by the operating model. Its failure
-mode is real and undesirable: it would block a release PR and force a
-`main -> release-0-2-0` merge into the branch whose merge commit *is* the
-release artifact. Revisit only if parallel release streams are ever introduced.
+ADR-0003 was silent on `strict`. It is recorded here as **not applicable**,
+because `strict` only has meaning once `required_status_checks` is a non-null
+object, and the intended state is `null`.
+
+This is deliberately not canonised as `strict: false`. Doing so would fix a
+value for a setting that does not exist in the target configuration, and would
+create pressure to enable status-check protection merely to give the value
+somewhere to live. `strict` becomes a decision at the moment status-check
+protection is introduced, on its own merits.
+
+For the record, the reasoning that would apply then: `main` moves only through
+release PRs in a single release stream, so the staleness `strict: true` guards
+against is excluded by the operating model, while its failure mode is real — it
+would block a release PR and force a `main -> release-0-2-0` merge into the
+branch whose merge commit *is* the release artifact. So if status-check
+protection is ever enabled, `strict: false` is the expected starting position,
+revisited if parallel release streams appear.
 
 ### 5. Platform limitation, stated rather than overclaimed
 
