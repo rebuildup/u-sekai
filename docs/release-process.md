@@ -49,7 +49,28 @@ targeting `release-x-y-z`. See [`CONTRIBUTING.md`](../CONTRIBUTING.md) and
    not a `release-<major>-<minor>-<patch>` branch or does not match
    `package.json#version`.
 3. Confirm `CI` (`lint + typecheck + build + test`) is green on the head.
-4. Merge with a **merge commit**.
+4. **Run the merge-executor preflight.** Immediately before merging, verify
+   and refuse unless all of the following hold:
+
+   | Check | Expected |
+   | --- | --- |
+   | PR base | `main` |
+   | PR head | the current `release-<major>-<minor>-<patch>` branch |
+   | head branch name | matches `package.json#version` |
+   | validation evidence | green on the **current** head SHA, not an earlier one |
+
+   This preflight is the enforcement mechanism for the release-only path, not
+   `release-source-check`. GitHub branch protection cannot constrain a PR's
+   head-branch pattern, and this repository deliberately does not work around
+   that by registering a required status check (ADR-0003 Correction, 2026-09-28;
+   upstream ADR-0016 §3/§4). `release-source-check` is advisory evidence that
+   corroborates the preflight.
+
+   **Consequence to state honestly:** a human merging from the GitHub UI can
+   bypass this step, so the release-only path is not fully machine-enforced.
+   See ADR-0003's platform-limitation note.
+
+5. Merge with a **merge commit**.
 
 The resulting merge commit on `main` is the released source state, and it is
 the commit the tag will point at.
