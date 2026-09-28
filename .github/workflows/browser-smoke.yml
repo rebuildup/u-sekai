@@ -1,0 +1,118 @@
+name: Browser smoke
+
+# Real-browser release gate for the 0.2.0 line.
+#
+# `ci.yml` stays the fast, deterministic, HTTP-only gate. This workflow
+# is the parallel browser gate: it installs Chromium, runs the browser
+# end-to-end path (adapter -> participant runtime -> observer ->
+# artifact) against the bundled demo environment, and records the result
+# against the exact release SHA that produced it.
+#
+# Behaviour when the browser runtime is missing or unusable: the job
+# FAILS with a clear "not run" message. We intentionally never skip,
+# because a green check would falsely signal browser coverage to a
+# release gate. Same precedent as `manual-live-smoke.yml`.
+#
+# No secrets are required or used: the reasoner is the deterministic
+# scripted provider and the target is the in-repo demo server.
+
+on:
+  push:
+    branches: [release-0-2-0]
+  pull_request:
+    branches: [release-0-2-0]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: browser-smoke-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  browser-smoke:
+    name: chromium end-to-end smoke (current SHA)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Record the SHA this gate is bound to
+        id: sha
+        run: |
+          set -euo pipefail
+          head="$(git rev-parse HEAD)"
+          echo "head_sha=${head}" >> "$GITHUB_OUTPUT"
+          echo "expected_sha=${GITHUB_SHA}" >> "$GITHUB_OUTPUT"
+          echo "u-sekai browser smoke is bound to ${head}"
+          echo "USEKAI_BROWSER_SMOKE_SHA=${head}" >> "$GITHUB_ENV"
+          if [ "${head}" != "${GITHUB_SHA}" ]; then
+            echo "::error::checked out ${head} but the workflow was triggered for ${GITHUB_SHA}; refusing to report a gate for a different commit"
+            exit 1
+          fi
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: 'npm'
+      - name: Install dependencies
+        run: npm ci
+      - name: Install the browser runtime
+        run: npx playwright install --with-deps chromium
+      - name: 'Preflight: prove Chromium can actually launch'
+        run: |
+          set -euo pipefail
+          if ! npx playwright --version; then
+            echo "::error::Playwright CLI is unavailable after 'npm ci'. The browser smoke did NOT run."
+            echo "::error::See docs/browser-runtime.md for the browser runtime requirements."
+            exit 1
+          fi
+          node --input-type=module -e "
+            import { existsSync } from 'node:fs';
+            import { chromium } from 'playwright';
+            const executablePath = chromium.executablePath();
+            if (!existsSync(executablePath)) {
+              console.error('::error::No Chromium binary at ' + executablePath);
+              console.error('::error::Run: npx playwright install --with-deps chromium');
+              process.exit(1);
+            }
+            let browser;
+            try {
+              browser = await chromium.launch({ headless: true });
+            } catch (err) {
+              console.error('::error::Chromium failed to launch: ' + (err && err.message ? err.message : err));
+              console.error('::error::Missing system libraries are the usual cause; --with-deps installs them.');
+              process.exit(1);
+            }
+            console.log('chromium ' + browser.version() + ' at ' + executablePath);
+            await browser.close();
+          "
+      - name: Browser end-to-end smoke (lint + typecheck + build + browser suite)
+        run: |
+          set -euo pipefail
+          npm run lint
+          npm run typecheck
+          npm run version:check
+          # `test:browser` rebuilds, so dist/ always matches this SHA
+          # before the compiled CLI is exercised.
+          npm run test:browser
+      - name: Assert the gate actually produced a run artifact
+        if: always()
+        run: |
+          set -euo pipefail
+          if [ ! -d test/.tmp/browser-runs ] && [ ! -d test/.tmp/browser-cli ]; then
+            echo "::error::Browser smoke produced no run artifact; the gate did NOT run."
+            exit 1
+          fi
+          echo "browser-smoke for ${USEKAI_BROWSER_SMOKE_SHA} produced:"
+          find test/.tmp/browser-runs test/.tmp/browser-cli -maxdepth 2 -type d 2>/dev/null || true
+      - name: Upload the run artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: browser-smoke-${{ steps.sha.outputs.head_sha }}
+          path: |
+            test/.tmp/browser-runs
+            test/.tmp/browser-cli
+          if-no-files-found: error
+          retention-days: 14
