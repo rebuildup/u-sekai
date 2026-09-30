@@ -211,7 +211,8 @@ shape, not a missing artifact.
 ## Release gate
 
 [`browser-smoke.yml`](../.github/workflows/browser-smoke.yml) runs on
-push and pull request against `release-0-2-0`:
+push and pull request against **every** release branch (`release-*`), so the
+gate follows the active release line without a per-version edit:
 
 1. records `git rev-parse HEAD`, refuses to continue if it differs from
    the triggering SHA, and names the uploaded artifact
