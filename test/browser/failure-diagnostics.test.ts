@@ -176,6 +176,16 @@ describe('browser failure diagnostics', () => {
     // Actionable: the reader learns what failed, where, and how.
     expect((caught as AdapterError).detail['phase']).toBe('goto');
     expect((caught as AdapterError).adapter).toBe('playwright');
+    // The open() diagnostic survives the thrown error so a future open()
+    // call on the same adapter instance cannot pretend the prior failure
+    // never happened. #37's "observability surface" is therefore true
+    // even for the failure path.
+    expect(adapter.__lastOpenForTest()).toEqual({
+      launchAttempts: 1,
+      status: 'failure',
+      phase: 'goto',
+      message: expect.stringMatching(/ERR_CONNECTION_REFUSED|ECONNREFUSED|refused/i),
+    });
     // No browser survived the failure, and none is left to pretend to work.
     expect(adapter.__isOpenForTest()).toBe(false);
     expect(adapter.__lastCloseForTest()).toEqual({
@@ -184,6 +194,87 @@ describe('browser failure diagnostics', () => {
       browserConnectedAfter: false,
     });
     await expect(adapter.observe(0)).rejects.toThrow(/observe called before open/);
+  }, 120_000);
+
+  it('distinguishes a navigation that returned 4xx from one that never committed', async () => {
+    // The demo server returns 404 for any unknown path. The navigation
+    // itself commits (the server delivered a document), so the diagnostic
+    // must record `phase: 'navigationStatus'` rather than `'goto'` —
+    // otherwise the operator cannot tell a server-side refusal apart from
+    // a transport failure.
+    const notFoundUrl = `${server.baseUrl}/__definitely_not_a_route__`;
+    const adapter = new PlaywrightAdapter();
+    let caught: unknown;
+    try {
+      await adapter.open(notFoundUrl);
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(AdapterError);
+    const message = (caught as Error).message;
+    expect(message).toContain('playwright open failed during navigationStatus');
+    expect(message).toContain('HTTP 404');
+    expect(message).toContain(notFoundUrl);
+    expect((caught as AdapterError).detail['phase']).toBe('navigationStatus');
+    expect(adapter.__lastOpenForTest()).toEqual({
+      launchAttempts: 1,
+      status: 'failure',
+      phase: 'navigationStatus',
+      message: expect.stringContaining('HTTP 404'),
+    });
+    // The browser was launched and tore down cleanly.
+    expect(adapter.__isOpenForTest()).toBe(false);
+    expect(adapter.__lastCloseForTest()?.errors).toEqual([]);
+  }, 120_000);
+
+  it('preserves diagnostic state through close() and starts the next open() clean', async () => {
+    // Contract: `close()` does NOT wipe `lastOpen` /
+    // `screenshotDiagnostics` — tests rely on inspecting them after the
+    // lifecycle ends (see `playwright-full-run.test.ts`). Cycle-cleanliness
+    // is `open()`'s job: it wipes both at the start so a second open()
+    // does not inherit the prior session's data. Proved here by
+    // observing the failure path: a second open() that fails must
+    // record the new failure, not the old success.
+    const adapter = new PlaywrightAdapter();
+    await adapter.open(server.baseUrl);
+    await adapter.observe(0);
+    const firstOpen = adapter.__lastOpenForTest();
+    const firstShots = adapter.__screenshotDiagnosticsForTest();
+    expect(firstOpen).toEqual({
+      launchAttempts: 1,
+      status: 'success',
+      phase: 'ready',
+    });
+    expect(firstShots.length).toBeGreaterThan(0);
+
+    // close() preserves the diagnostic surface for post-mortem
+    // inspection by tests and operators.
+    await adapter.close();
+    expect(adapter.__lastOpenForTest()).toEqual(firstOpen);
+    expect(adapter.__screenshotDiagnosticsForTest()).toEqual(firstShots);
+
+    // A second open() that fails must report the new failure, not the
+    // prior session's success. If `open()` did not wipe state at the
+    // start, this assertion would surface `status: 'success'` from the
+    // first session — the precise cycle-cleanliness contract.
+    let caught: unknown;
+    try {
+      await adapter.open(deadUrl);
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(AdapterError);
+    expect(adapter.__lastOpenForTest()).toEqual({
+      launchAttempts: 1,
+      status: 'failure',
+      phase: 'goto',
+      message: expect.stringMatching(/ERR_CONNECTION_REFUSED|ECONNREFUSED|refused/i),
+    });
+    // open() also wiped `screenshotDiagnostics` at the start, so the
+    // failed open() leaves the per-step screenshot history empty: the
+    // new session observed nothing, and the prior session's history
+    // does not bleed across cycles.
+    expect(adapter.__screenshotDiagnosticsForTest()).toEqual([]);
   }, 120_000);
 
   it('never fabricates browser evidence for an unopenable target', async () => {

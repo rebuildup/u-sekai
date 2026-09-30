@@ -75,11 +75,17 @@ export interface CloseDiagnostics {
  * Diagnostic for the most recent `open()` call. This is deliberately
  * observational only: #37 must capture the real failing phase before it
  * decides whether any launch retry is justified.
+ *
+ * `navigationStatus` separates "navigation itself failed to commit" (`goto`,
+ * the network never delivered a document) from "navigation committed but
+ * the server returned 4xx/5xx" (`navigationStatus`). Both surface as a
+ * non-2xx response from `page.goto`, but the operator needs to distinguish
+ * them.
  */
 export interface OpenDiagnostics {
   readonly launchAttempts: number;
   readonly status: 'success' | 'failure';
-  readonly phase: 'launch' | 'newContext' | 'newPage' | 'goto' | 'ready';
+  readonly phase: 'launch' | 'newContext' | 'newPage' | 'goto' | 'navigationStatus' | 'ready';
   readonly message?: string;
 }
 
@@ -108,16 +114,23 @@ const DEFAULT_VIEWPORT = { width: 1280, height: 800 } as const;
 const DEFAULT_ACTION_TIMEOUT_MS = 10_000;
 const DEFAULT_SETTLE_GRACE_MS = 250;
 const DEFAULT_MAX_WAIT_MS = 30_000;
-const MAX_SCREENSHOT_ATTEMPTS = 2;
+/**
+ * Screenshot retry budget per `observe()` call: 1 original attempt plus
+ * this many retries. Named after the *retry* budget (not the total) so
+ * the contract is self-documenting: a contributor reading the loop sees
+ * `attempt <= SCREENSHOT_RETRY_BUDGET + 1` and understands the bound.
+ */
+const SCREENSHOT_RETRY_BUDGET = 1;
 /** How far the in-page selector builder may walk up the tree. */
 const MAX_SELECTOR_DEPTH = 8;
 
 /**
  * Bounded recovery for the transient Chromium failure captured in #37.
  *
- * Only the exact Page.captureScreenshot "Unable to capture screenshot"
- * protocol failure is retried. Browser-closed, timeout, navigation and
- * arbitrary errors fail immediately rather than being papered over.
+ * Only Chromium `Page.captureScreenshot` protocol failures with the
+ * "Unable/Failed to capture screenshot" wording are retried.
+ * Browser-closed, timeout, navigation and arbitrary errors fail
+ * immediately rather than being papered over.
  *
  * @internal exported so the recovery policy can be proven deterministically.
  */
@@ -126,7 +139,7 @@ export async function captureScreenshotWithRecovery(
 ): Promise<ScreenshotCaptureOutcome> {
   const failures: string[] = [];
 
-  for (let attempt = 1; attempt <= MAX_SCREENSHOT_ATTEMPTS; attempt += 1) {
+  for (let attempt = 1; attempt <= SCREENSHOT_RETRY_BUDGET + 1; attempt += 1) {
     try {
       return {
         status: 'success',
@@ -138,7 +151,7 @@ export async function captureScreenshotWithRecovery(
       const message = describeError(err);
       failures.push(message);
       const retryable = isRetryableScreenshotFailure(message);
-      if (!retryable || attempt === MAX_SCREENSHOT_ATTEMPTS) {
+      if (!retryable || attempt === SCREENSHOT_RETRY_BUDGET + 1) {
         return {
           status: 'failure',
           attempts: attempt,
@@ -151,7 +164,9 @@ export async function captureScreenshotWithRecovery(
     }
   }
 
-  throw new Error('unreachable screenshot recovery state');
+  // Defensive: the loop above always returns. This throw exists to make
+  // the invariant loud if a future refactor lets the loop fall through.
+  throw new Error('unreachable: captureScreenshotWithRecovery fell through the retry loop');
 }
 
 /**
@@ -167,9 +182,16 @@ function formatScreenshotFailureHistory(failures: ReadonlyArray<string>): string
 }
 
 function isRetryableScreenshotFailure(message: string): boolean {
+  // Pin on the Chromium protocol method signature: `Page.captureScreenshot`
+  // is the contract, and only that protocol error is the transient we
+  // know how to retry. The wording Playwright uses around it has drifted
+  // between releases ("Unable to capture screenshot" -> "Failed to
+  // capture screenshot", ...), so accept either verb rather than pinning
+  // a literal phrase. This keeps a wording tweak from silently turning
+  // the bounded recovery into a first-attempt failure.
   return (
     /Page\.captureScreenshot/i.test(message) &&
-    /Unable to capture screenshot/i.test(message)
+    /(?:unable|failed)\s+to\s+capture\s+screenshot/i.test(message)
   );
 }
 
@@ -209,6 +231,12 @@ export class PlaywrightAdapter implements BrowserAdapter {
       throw new AdapterError('playwright open called while a browser is already open', 'playwright', { url });
     }
     this.viewport = { ...(viewport ?? this.defaultViewport) };
+    // Cycle-cleanliness is `open()`'s responsibility: a second open()
+    // must not inherit the prior session's open() or screenshot
+    // diagnostics. `close()` deliberately leaves these populated so
+    // tests can read them after the lifecycle ends.
+    this.lastOpen = null;
+    this.screenshotDiagnostics = [];
     let phase: OpenDiagnostics['phase'] = 'launch';
     let launchAttempts = 0;
     try {
@@ -228,6 +256,10 @@ export class PlaywrightAdapter implements BrowserAdapter {
       phase = 'goto';
       const response = await this.page.goto(url, { waitUntil: 'domcontentloaded' });
       if (response && !response.ok() && response.status() >= 400) {
+        // The navigation itself committed (a document came back); the
+        // server just refused it. Distinguish from a navigation that
+        // never delivered a document so the diagnostic is actionable.
+        phase = 'navigationStatus';
         throw new Error(`navigation returned HTTP ${response.status()} for ${url}`);
       }
       this.currentUrl = this.page.url();
@@ -266,6 +298,11 @@ export class PlaywrightAdapter implements BrowserAdapter {
 
   async observe(stepIndex: number): Promise<ObserverObservation> {
     const page = this.requirePage('observe');
+    // `phaseRef.phase` only drives the AdapterError message for the
+    // post-screenshot phases. The screenshot phase itself is owned by
+    // `captureScreenshotWithRecovery`; if it fails, the diagnostic it
+    // throws already carries the attempt history, so the surrounding
+    // catch reports `phase: 'screenshot'` as the fallback.
     const phaseRef = { phase: 'screenshot' };
     try {
       const screenshot = await captureScreenshotWithRecovery(() =>
@@ -422,6 +459,12 @@ export class PlaywrightAdapter implements BrowserAdapter {
     this.currentTitle = '';
     this.consoleLog = [];
     this.networkLog = [];
+    // `lastOpen` and `screenshotDiagnostics` are intentionally NOT cleared
+    // here: tests read them via the `__*ForTest()` accessors AFTER
+    // `close()` (see `playwright-full-run.test.ts` and the failure
+    // diagnostics suite). Cycle-cleanliness is the responsibility of
+    // `open()`: it clears both fields at the start so a second cycle
+    // does not inherit the prior session's data.
     this.lastClose = { errors, browserWasRunning, browserConnectedAfter };
 
     if (errors.length > 0) {
@@ -452,8 +495,18 @@ export class PlaywrightAdapter implements BrowserAdapter {
     return this.screenshotDiagnostics;
   }
 
-  __resetRecentForTest(): void {
+  /**
+   * Clears the per-session diagnostic state accumulated by `open()` and
+   * `observe()` so a test can reuse the adapter instance across scenarios
+   * without seeing the prior cycle's data. Does not touch the
+   * console / network logs or the most-recent close diagnostic; those
+   * are owned by the `close()` lifecycle and remain meaningful between
+   * cycles.
+   */
+  __resetDiagnosticsForTest(): void {
     this.recentActions = [];
+    this.lastOpen = null;
+    this.screenshotDiagnostics = [];
   }
 
   // --- internals --------------------------------------------------
