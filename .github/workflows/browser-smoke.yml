@@ -18,9 +18,9 @@ name: Browser smoke
 
 on:
   push:
-    branches: ['release-*']
+    branches: [release-*]
   pull_request:
-    branches: ['release-*']
+    branches: [release-*]
 
 permissions:
   contents: read
