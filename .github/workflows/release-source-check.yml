@@ -25,6 +25,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
+          # Check out the head commit, not the synthetic `refs/pull/{n}/merge`.
+          # Without `ref:`, the default checkout reads `package.json` from the
+          # main side, so the gate would report green even when the head
+          # branch's `package.json` does not match the head branch name.
+          ref: ${{ github.event.pull_request.head.sha }}
           persist-credentials: false
       - name: Check that head branch matches package version
         env:
