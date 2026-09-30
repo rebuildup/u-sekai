@@ -83,19 +83,49 @@ describe('browser full run', () => {
       })),
     };
 
+    const adapters: PlaywrightAdapter[] = [];
     const { result, runId } = await runExperiment({
       experiment,
-      adapterFactory: () => new PlaywrightAdapter(),
+      adapterFactory: () => {
+        const adapter = new PlaywrightAdapter();
+        adapters.push(adapter);
+        return adapter;
+      },
       resolveTargetUrl: () => server.baseUrl,
     });
+
+    const openDiagnostics = adapters.map((adapter) => adapter.__lastOpenForTest());
+    const screenshotDiagnostics = adapters.map((adapter) => adapter.__screenshotDiagnosticsForTest());
+    const failureContext =
+      `runtimeErrors=${JSON.stringify(result.evidence.runtimeErrors)} openDiagnostics=${JSON.stringify(openDiagnostics)} screenshotDiagnostics=${JSON.stringify(screenshotDiagnostics)}`;
+
+    console.info(`browser launch diagnostics: ${JSON.stringify(openDiagnostics)}`);
+    console.info(`browser screenshot diagnostics: ${JSON.stringify(screenshotDiagnostics)}`);
 
     // --- participants reached a clean terminal state ----------------
     expect(Object.keys(result.terminationReasons)).toHaveLength(def.participants.length);
     for (const reason of Object.values(result.terminationReasons)) {
-      expect(['finish', 'stepBudgetExceeded']).toContain(reason);
-      expect(reason).toBe('finish');
+      expect(['finish', 'stepBudgetExceeded'], failureContext).toContain(reason);
+      expect(reason, failureContext).toBe('finish');
     }
-    expect(result.evidence.runtimeErrors).toEqual([]);
+    expect(result.evidence.runtimeErrors, failureContext).toEqual([]);
+    expect(openDiagnostics, failureContext).toHaveLength(def.participants.length);
+    for (const diagnostic of openDiagnostics) {
+      expect(diagnostic, failureContext).toEqual({
+        launchAttempts: 1,
+        status: 'success',
+        phase: 'ready',
+      });
+    }
+    expect(screenshotDiagnostics, failureContext).toHaveLength(def.participants.length);
+    for (const participantDiagnostics of screenshotDiagnostics) {
+      expect(participantDiagnostics.length, failureContext).toBeGreaterThan(0);
+      for (const diagnostic of participantDiagnostics) {
+        expect(diagnostic.status, failureContext).toBe('success');
+        expect(diagnostic.attempts, failureContext).toBeGreaterThanOrEqual(1);
+        expect(diagnostic.attempts, failureContext).toBeLessThanOrEqual(2);
+      }
+    }
     for (const p of result.participants) {
       expect(p.selfReport.participantId).toBe(p.participantId);
       expect(p.selfReport.capturedAt).not.toBe('');

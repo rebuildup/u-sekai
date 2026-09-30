@@ -8,7 +8,7 @@
 
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { createServer } from 'node:http';
-import { PlaywrightAdapter } from '../../src/adapter/browser/playwright-adapter.js';
+import { PlaywrightAdapter, captureScreenshotWithRecovery } from '../../src/adapter/browser/playwright-adapter.js';
 import { AdapterError } from '../../src/domain/errors.js';
 import { sha256Hex } from '../../src/evidence/hash.js';
 import type { ParticipantAction } from '../../src/domain/capability.js';
@@ -45,6 +45,156 @@ afterAll(async () => {
 });
 
 describe('PlaywrightAdapter (real Chromium)', () => {
+  it('retries the observed transient Page.captureScreenshot failure once', async () => {
+    let calls = 0;
+    const outcome = await captureScreenshotWithRecovery(async () => {
+      calls += 1;
+      if (calls === 1) {
+        throw new Error(
+          'page.screenshot: Protocol error (Page.captureScreenshot): Unable to capture screenshot',
+        );
+      }
+      return Uint8Array.from([0x89, 0x50, 0x4e, 0x47]);
+    });
+
+    expect(outcome.status).toBe('success');
+    if (outcome.status !== 'success') return;
+    expect(calls).toBe(2);
+    expect(outcome.attempts).toBe(2);
+    expect(outcome.failures).toHaveLength(1);
+    expect(outcome.failures[0]).toContain('Unable to capture screenshot');
+  });
+
+  it('does not retry unrelated screenshot failures', async () => {
+    let calls = 0;
+    const outcome = await captureScreenshotWithRecovery(async () => {
+      calls += 1;
+      throw new Error('page.screenshot: Target page, context or browser has been closed');
+    });
+
+    expect(outcome.status).toBe('failure');
+    if (outcome.status !== 'failure') return;
+    expect(calls).toBe(1);
+    expect(outcome.attempts).toBe(1);
+    expect(outcome.error.message).toContain('after 1 attempt');
+  });
+
+  it('fails closed when the transient screenshot retry budget is exhausted', async () => {
+    let calls = 0;
+    const outcome = await captureScreenshotWithRecovery(async () => {
+      calls += 1;
+      throw new Error(
+        'page.screenshot: Protocol error (Page.captureScreenshot): Unable to capture screenshot',
+      );
+    });
+
+    expect(outcome.status).toBe('failure');
+    if (outcome.status !== 'failure') return;
+    expect(calls).toBe(2);
+    expect(outcome.attempts).toBe(2);
+    expect(outcome.failures).toHaveLength(2);
+    expect(outcome.error.message).toContain('after 2 attempt');
+    expect(outcome.error.message).toContain('Unable to capture screenshot');
+  });
+
+  it('carries every attempt in the terminal error, not only the last one', async () => {
+    // Distinct diagnostics per attempt. Asserting the same string twice would
+    // pass even if the implementation only kept the final message, so the two
+    // attempts must differ in a way that is individually identifiable.
+    const diagnostics = [
+      'page.screenshot: Protocol error (Page.captureScreenshot): Unable to capture screenshot (transient compositor reset)',
+      'page.screenshot: Protocol error (Page.captureScreenshot): Unable to capture screenshot (second distinct failure)',
+    ];
+    let calls = 0;
+    const outcome = await captureScreenshotWithRecovery(async () => {
+      const message = diagnostics[calls] ?? diagnostics[diagnostics.length - 1];
+      calls += 1;
+      throw new Error(message ?? 'unreachable');
+    });
+
+    expect(outcome.status).toBe('failure');
+    if (outcome.status !== 'failure') return;
+    expect(calls).toBe(2);
+
+    // Layer 1: the structured recovery result keeps both.
+    expect(outcome.failures).toHaveLength(2);
+    expect(outcome.failures[0]).toContain('transient compositor reset');
+    expect(outcome.failures[1]).toContain('second distinct failure');
+
+    // Layer 2: the terminal error keeps both, attempt-numbered. This is the
+    // string that becomes the AdapterError message and therefore the durable
+    // artifact diagnostic.
+    const message = outcome.error.message;
+    expect(message).toContain('attempt 1:');
+    expect(message).toContain('attempt 2:');
+    expect(message).toContain('transient compositor reset');
+    expect(message).toContain('second distinct failure');
+    // And it is genuinely the history, not one message repeated.
+    expect(message.match(/Unable to capture screenshot/g)).toHaveLength(2);
+  });
+
+  it('fails closed through observe() and preserves both attempts when the screenshot budget is exhausted', async () => {
+    // White-box: the fault being simulated is a browser-level protocol
+    // failure that cannot be produced from outside the adapter, so the
+    // adapter's own page is patched directly. `page` is TypeScript-private
+    // only; this touches no production surface.
+    const adapter = new PlaywrightAdapter();
+    try {
+      await adapter.open(server.baseUrl);
+      const page = (adapter as unknown as { page: import('playwright').Page | null }).page;
+      if (!page) throw new Error('adapter.page is null after a successful open');
+
+      let calls = 0;
+      const original = page.screenshot.bind(page);
+      page.screenshot = (async () => {
+        calls += 1;
+        throw new Error(
+          'page.screenshot: Protocol error (Page.captureScreenshot): Unable to capture screenshot',
+        );
+      }) as typeof page.screenshot;
+
+      let thrown: unknown;
+      try {
+        // Fail-closed: a single observe() call must reject with a typed
+        // adapter error, never return a partial or fabricated observation.
+        thrown = await adapter.observe(0).catch((err: unknown) => err);
+      } finally {
+        page.screenshot = original;
+      }
+
+      expect(thrown, 'observe() must reject when the screenshot budget is exhausted').toBeInstanceOf(AdapterError);
+      const message = (thrown as Error).message;
+      // The phase, the step and the underlying cause are all preserved, so
+      // the failure is diagnosable from the message alone.
+      expect(message).toContain('playwright observe failed during screenshot at step 0');
+      expect(message).toContain('after 2 attempt(s)');
+      expect(message).toContain('Unable to capture screenshot');
+
+      // Bounded: exactly the configured budget for that one observe() call,
+      // no unbounded retry.
+      expect(calls).toBe(2);
+
+      // The first failure diagnostic is not discarded, and exhaustion is
+      // observable as evidence rather than as a silent success.
+      // One entry per observe() call; the attempt count inside it is what
+      // records the bounded retry, so recovery is distinguishable from a
+      // first-try success.
+      const diagnostics = adapter.__screenshotDiagnosticsForTest();
+      expect(diagnostics).toHaveLength(1);
+      const [entry] = diagnostics;
+      expect(entry?.stepIndex).toBe(0);
+      expect(entry?.status).toBe('failure');
+      expect(entry?.attempts).toBe(2);
+      // Both attempts are recorded, so the transient-then-persistent shape is
+      // diagnosable after the fact and the first failure is not discarded.
+      expect(entry?.failures).toHaveLength(2);
+      expect(entry?.failures[0]).toContain('Unable to capture screenshot');
+      expect(entry?.failures[1]).toContain('Unable to capture screenshot');
+    } finally {
+      await adapter.close();
+    }
+  });
+
   it('reports the real viewport, a real focus rect and a real sha256 screenshot hash', async () => {
     const adapter = new PlaywrightAdapter({ viewport: { width: 1024, height: 640 } });
     try {

@@ -70,6 +70,56 @@ async function closedPortUrl(): Promise<string> {
  * A real browser against a real page that breaks on the second
  * observation, i.e. the "it worked, then it didn't" shape.
  */
+/**
+ * Drives a real `PlaywrightAdapter` whose browser-level screenshot call
+ * always fails with the transient protocol error captured in #37, so the
+ * bounded screenshot budget is genuinely exhausted on a real page.
+ *
+ * The page is patched white-box: this is a browser-level fault that cannot be
+ * produced from outside the adapter, and no production surface is added for it.
+ */
+class ScreenshotAlwaysFailsAdapter implements BrowserAdapter {
+  readonly adapterId = 'playwright-screenshot-fails';
+  readonly screenshotCalls: number[] = [];
+
+  constructor(private readonly inner = new PlaywrightAdapter()) {}
+
+  async open(url: string, viewport?: { width: number; height: number }): Promise<void> {
+    await this.inner.open(url, viewport);
+    const page = (this.inner as unknown as { page: import('playwright').Page | null }).page;
+    if (!page) throw new Error('inner adapter page is null after a successful open');
+    const original = page.screenshot.bind(page);
+    page.screenshot = (async () => {
+      const attempt = this.screenshotCalls.length + 1;
+      this.screenshotCalls.push(attempt);
+      // A distinct diagnostic per attempt. If the terminal message only kept
+      // the last one, the earlier attempt would be invisible in the artifact.
+      throw new Error(
+        attempt === 1
+          ? 'page.screenshot: Protocol error (Page.captureScreenshot): Unable to capture screenshot (transient compositor reset)'
+          : 'page.screenshot: Protocol error (Page.captureScreenshot): Unable to capture screenshot (persistent second failure)',
+      );
+    }) as typeof page.screenshot;
+    void original;
+  }
+
+  async observe(stepIndex: number) {
+    return this.inner.observe(stepIndex);
+  }
+
+  async execute(action: Parameters<BrowserAdapter['execute']>[0]) {
+    return this.inner.execute(action);
+  }
+
+  async close(): Promise<void> {
+    await this.inner.close();
+  }
+
+  screenshotDiagnostics() {
+    return this.inner.__screenshotDiagnosticsForTest();
+  }
+}
+
 class BreaksMidRunAdapter implements BrowserAdapter {
   readonly adapterId = 'playwright-breaks';
   private steps = 0;
@@ -98,6 +148,14 @@ class BreaksMidRunAdapter implements BrowserAdapter {
 
   async close(): Promise<void> {
     await this.inner.close();
+  }
+
+  openDiagnostics() {
+    return this.inner.__lastOpenForTest();
+  }
+
+  screenshotDiagnostics() {
+    return this.inner.__screenshotDiagnosticsForTest();
   }
 }
 
@@ -196,24 +254,99 @@ describe('browser failure diagnostics', () => {
     expect(run.stderr).toMatch(/ERR_CONNECTION_REFUSED|ECONNREFUSED|refused/i);
   }, 180_000);
 
-  it('terminates every participant with error when the browser breaks mid-run', async () => {
+  it('exhausting the screenshot budget fails the run closed and persists the diagnostic', async () => {
     const def = await loadExperiment(fixture);
+    const adapters: ScreenshotAlwaysFailsAdapter[] = [];
     const { result, runId } = await runExperiment({
       experiment: { ...def, outDir },
-      adapterFactory: () => new BreaksMidRunAdapter(),
+      adapterFactory: () => {
+        const adapter = new ScreenshotAlwaysFailsAdapter();
+        adapters.push(adapter);
+        return adapter;
+      },
       resolveTargetUrl: () => server.baseUrl,
     });
 
     const reasons = Object.values(result.terminationReasons);
-    expect(reasons).toHaveLength(def.participants.length);
+    // The recovery is bounded, so exhaustion must terminate the participant as
+    // a runtime failure. A recovered-or-silent success here would mean the
+    // gate could go green on a broken browser.
+    expect(reasons, `runtimeErrors=${JSON.stringify(result.evidence.runtimeErrors)}`).toEqual(
+      def.participants.map(() => 'error'),
+    );
+
+    // The diagnostic survives into the run artifact, not just the log, so the
+    // failure is diagnosable from the evidence alone.
+    //
+    // The full attempt history must be present, not only the last attempt: the
+    // first diagnostic is what explains why a retry happened at all.
+    const runtimeErrors = result.evidence.runtimeErrors;
+    expect(runtimeErrors).toHaveLength(def.participants.length);
+    for (const entry of runtimeErrors) {
+      expect(entry.where).toMatch(/^participant=/);
+      expect(entry.message).toContain('playwright observe failed during screenshot');
+      expect(entry.message).toContain('after 2 attempt(s)');
+      expect(entry.message).toContain('Unable to capture screenshot');
+      expect(entry.message, 'attempt 1 diagnostic lost from the artifact').toContain(
+        'attempt 1:',
+      );
+      expect(entry.message, 'attempt 2 diagnostic lost from the artifact').toContain(
+        'attempt 2:',
+      );
+      expect(entry.message).toContain('transient compositor reset');
+      expect(entry.message).toContain('persistent second failure');
+    }
+
+    // Bounded per observe() call, and recorded as evidence.
+    for (const adapter of adapters) {
+      const diagnostics = adapter.screenshotDiagnostics();
+      expect(diagnostics.length).toBeGreaterThan(0);
+      expect(diagnostics.every((d) => d.attempts === 2 && d.status === 'failure')).toBe(true);
+    }
+
+    // Negative evidence for a capture that never succeeded: the contract is
+    //   capture failed -> observe() failed -> no PNG, no observation JSON,
+    //   terminationReason = error, diagnostic in runtimeErrors.
+    // Asserted per participant, and asserted as absence rather than relaxed.
+    const runDir = path.join(outDir, runId);
+    for (const p of def.participants) {
+      const shots = path.join(runDir, 'screenshots', p.id);
+      expect(existsSync(shots) ? await fs.readdir(shots) : []).toEqual([]);
+      const obsDir = path.join(runDir, 'observations', p.id);
+      expect(existsSync(obsDir) ? await fs.readdir(obsDir) : []).toEqual([]);
+    }
+    // No step may have been recorded at all, so no evidence row claims a page
+    // was observed.
+    expect(result.evidence.stepCountByParticipant).toEqual(
+      Object.fromEntries(def.participants.map((p) => [p.id, 0])),
+    );
+  }, 180_000);
+
+  it('terminates every participant with error when the browser breaks mid-run', async () => {
+    const def = await loadExperiment(fixture);
+    const adapters: BreaksMidRunAdapter[] = [];
+    const { result, runId } = await runExperiment({
+      experiment: { ...def, outDir },
+      adapterFactory: () => {
+        const adapter = new BreaksMidRunAdapter();
+        adapters.push(adapter);
+        return adapter;
+      },
+      resolveTargetUrl: () => server.baseUrl,
+    });
+
+    const failureContext =
+      `runtimeErrors=${JSON.stringify(result.evidence.runtimeErrors)} openDiagnostics=${JSON.stringify(adapters.map((adapter) => adapter.openDiagnostics()))} screenshotDiagnostics=${JSON.stringify(adapters.map((adapter) => adapter.screenshotDiagnostics()))}`;
+    const reasons = Object.values(result.terminationReasons);
+    expect(reasons, failureContext).toHaveLength(def.participants.length);
     for (const reason of reasons) {
       // The critical assertion: a run that never finished cannot be
       // reported as a finished exploration.
-      expect(reason).toBe('error');
+      expect(reason, failureContext).toBe('error');
     }
     // Each participant got exactly one (failing) step recorded.
     for (const p of def.participants) {
-      expect(result.evidence.stepCountByParticipant[p.id]).toBe(1);
+      expect(result.evidence.stepCountByParticipant[p.id], failureContext).toBe(1);
     }
     expect(result.evidence.terminationReasonByParticipant).toEqual(result.terminationReasons);
 
