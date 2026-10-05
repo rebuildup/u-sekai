@@ -61,12 +61,17 @@ describe('#70 acceptance-scenario routing', () => {
   it('keeps the default profile unable to reach a browser-backed scenario', () => {
     // The guard reasons about the default profile's e2e sweep. Pin the
     // exact entry, so a change to it goes red here instead of silently
-    // invalidating every claim below.
+    // invalidating every claim below. Either quote style counts: what is
+    // pinned is that the sweep exists as a real include entry, not its
+    // formatting.
+    const sweepIsAnIncludeEntry = [`'${DEFAULT_E2E_GLOB}'`, `"${DEFAULT_E2E_GLOB}"`].some(
+      (quoted) => defaultProfileSource.includes(quoted),
+    );
     expect(
-      defaultProfileSource,
-      `vitest.config.ts no longer contains ${DEFAULT_E2E_GLOB}; this guard reasons about ` +
-        'that sweep and has to be updated alongside it.',
-    ).toContain(`'${DEFAULT_E2E_GLOB}'`);
+      sweepIsAnIncludeEntry,
+      `vitest.config.ts no longer has ${DEFAULT_E2E_GLOB} as an include entry; this guard ` +
+        'reasons about that sweep and has to be updated alongside it.',
+    ).toBe(true);
 
     expect(
       matchesGlob(DEFAULT_E2E_GLOB, SCENARIO),

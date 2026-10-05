@@ -39,7 +39,7 @@ export const ACCEPTANCE_DIR = 'test/e2e/service-acceptance';
 export const ROUTING_SUBDIR = `${ACCEPTANCE_DIR}/routing`;
 
 /** The file suffix that routes a scenario into the browser profile. */
-export const SCENARIO_SUFFIX = '.browser-acceptance.ts';
+const SCENARIO_SUFFIX = '.browser-acceptance.ts';
 
 /** The exact entry that routes the acceptance scenario into the browser profile. */
 export const SCENARIO_GLOB = `${ACCEPTANCE_DIR}/**/*${SCENARIO_SUFFIX}`;
@@ -176,6 +176,9 @@ function acceptanceFilesIn(dir: string): string[] {
 export function acceptanceClaims(): ProfileClaim[] {
   return acceptanceFilesIn(ACCEPTANCE_DIR).map((file) => ({
     file,
+    // The default profile's other entries (`test/unit/**`,
+    // `test/integration/**`) cannot reach `test/e2e/**`, so its e2e sweep
+    // is the only claim that can apply inside the acceptance directory.
     defaultProfile: matchesGlob(DEFAULT_E2E_GLOB, file),
     browserProfile: browserInclude.some((pattern) => matchesGlob(pattern, file)),
   }));
