@@ -35,6 +35,16 @@ on:
 permissions:
   contents: read
 
+# `github.ref` is `refs/pull/<n>/merge` for a pull request and
+# `refs/heads/<branch>` for a push, so this cancels superseded runs within
+# one branch and never cancels a sibling PR or the release line. Added
+# alongside the wider `pull_request` trigger: without it, every WIP push to
+# a ticket branch queued a full run that nobody would read. The run for the
+# final commit still executes, so a required check still resolves.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   ci:
     name: lint + typecheck + build + test
