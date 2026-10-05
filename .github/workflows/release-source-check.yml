@@ -1,13 +1,36 @@
 name: release-source-check
 
 # This workflow enforces ADR-0003 in u-sekai: PRs targeting `main` must come
-# from a `release-<major>-<minor>-<patch>` branch. It is registered as a
-# required status check on `main` via the GitHub branch protection API,
-# because GitHub's built-in branch protection cannot constrain the PR head
-# branch pattern by itself.
+# from a `release-<major>-<minor>-<patch>` branch, and that branch's own
+# content must agree with its name. It is registered as a required status
+# check on `main` via the GitHub branch protection API, because GitHub's
+# built-in branch protection cannot constrain the PR head branch pattern by
+# itself.
 #
 # Triggers on every PR targeting `main`. Exits non-zero (failing the check)
-# when the head branch is not a `release-x-y-z` branch.
+# when the head branch is not a `release-x-y-z` branch, or when the head
+# commit's own `package.json` version disagrees with the head branch name.
+#
+# ## Which commit this gate reads
+#
+# The gate is about the *head*: `github.head_ref` names the branch, and the
+# version that must match that name is the one on the head commit. So the
+# checkout is pinned to `github.event.pull_request.head.sha`.
+#
+# `actions/checkout` with no `ref:` checks out `GITHUB_SHA`, which on a
+# `pull_request` event is the synthetic merge `refs/pull/<n>/merge`. That
+# commit carries the *base* branch's copy of every file the PR did not
+# touch, so reading `package.json` from it reads `main`, not the head. The
+# gate then compares `main`'s version against the head branch name and
+# reports success for a head branch that does not match its own content.
+# That is the false green this pinning removes; `test/unit/` reproduces it
+# with a real git merge and asserts both the pre-fix and post-fix verdicts.
+#
+# `scripts/release-source-check.mjs` re-derives the head SHA from
+# `GITHUB_EVENT_PATH` and independently checks that the working tree really
+# is that commit, failing closed when it is not. The two are read from
+# different places, so a future edit that drops the `ref:` fails loudly
+# instead of silently reverting to the merge.
 
 on:
   pull_request:
@@ -22,29 +45,15 @@ jobs:
   release-source-check:
     name: release-source-check
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
       - uses: actions/checkout@v4
         with:
+          # The head commit, never the synthetic merge. See the note above.
+          ref: ${{ github.event.pull_request.head.sha }}
           persist-credentials: false
-      - name: Check that head branch matches package version
+
+      - name: Check that the head branch name matches the head commit's package version
         env:
           HEAD_REF: ${{ github.head_ref }}
-        run: |
-          if [ -z "$HEAD_REF" ]; then
-            echo "::error::HEAD_REF is empty; this workflow is only meaningful for PRs from branches."
-            exit 1
-          fi
-
-          if [[ ! "$HEAD_REF" =~ ^release-[0-9]+-[0-9]+-[0-9]+$ ]]; then
-            echo "::error::PR head branch '$HEAD_REF' is not a release-<major>-<minor>-<patch> branch."
-            exit 1
-          fi
-
-          VERSION="$(node -p "require('./package.json').version")"
-          EXPECTED_REF="release-${VERSION//./-}"
-          if [[ "$HEAD_REF" != "$EXPECTED_REF" ]]; then
-            echo "::error::PR head '$HEAD_REF' does not match package.json version '$VERSION' (expected '$EXPECTED_REF')."
-            exit 1
-          fi
-
-          echo "Head branch '$HEAD_REF' matches package.json version '$VERSION'."
+        run: node scripts/release-source-check.mjs

@@ -76,11 +76,22 @@ export interface CloseDiagnostics {
  * observational only: #37 must capture the real failing phase before it
  * decides whether any launch retry is justified.
  *
- * `navigationStatus` separates "navigation itself failed to commit" (`goto`,
- * the network never delivered a document) from "navigation committed but
- * the server returned 4xx/5xx" (`navigationStatus`). Both surface as a
- * non-2xx response from `page.goto`, but the operator needs to distinguish
- * them.
+ * The `goto` and `navigationStatus` phases are two different failures,
+ * and an operator reading a failed run needs to act on each differently:
+ *
+ * - `goto` — `page.goto()` **rejected**: no document was ever committed.
+ *   DNS failure, ECONNREFUSED, a TLS error, or the navigation timeout.
+ *   The cause is below the application; retrying elsewhere or fixing the
+ *   host is the next step.
+ * - `navigationStatus` — `page.goto()` **returned a `Response`** whose
+ *   status is 4xx/5xx. The navigation committed and a document exists;
+ *   the server refused that document. The URL resolved and the browser
+ *   is working; the application, its routing, or its deployment is what
+ *   needs attention.
+ *
+ * A transport failure never reaches `navigationStatus` — `page.goto()`
+ * throws before any status exists — so a run reporting `navigationStatus`
+ * has already proven the network path works.
  */
 export interface OpenDiagnostics {
   readonly launchAttempts: number;
