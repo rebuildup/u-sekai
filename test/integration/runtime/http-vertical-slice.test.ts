@@ -85,14 +85,15 @@ const OBSERVER_FINDING = {
 async function observationFiles(artifactDir: string): Promise<ReadonlyArray<string>> {
   const dir = path.join(artifactDir, 'observations');
   const participants = await fs.readdir(dir);
-  const files: string[] = [];
-  for (const participant of participants) {
-    const steps = await fs.readdir(path.join(dir, participant));
-    for (const step of steps.filter((f) => f.endsWith('.json'))) {
-      files.push(path.join('observations', participant, step));
-    }
-  }
-  return files.sort();
+  const perParticipant = await Promise.all(
+    participants.map(async (participant) => {
+      const steps = await fs.readdir(path.join(dir, participant));
+      return steps
+        .filter((f) => f.endsWith('.json'))
+        .map((step) => path.join('observations', participant, step));
+    }),
+  );
+  return perParticipant.flat().sort();
 }
 
 describe('runtime vertical slice over the HTTP adapter', () => {
