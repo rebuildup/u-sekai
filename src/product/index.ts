@@ -71,6 +71,7 @@ export {
   type IdentityCapabilityBounds,
   type IdentityLifecycle,
   type IdentityStateRef,
+  type RetentionForLifecycle,
   type StateRetention,
   type SyntheticIdentity,
 } from './identity.js';

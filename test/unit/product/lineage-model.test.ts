@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import {
+  buildProduct,
   buildProductModel,
   findCohort,
   findEnvironment,
@@ -12,6 +13,7 @@ import {
   parseEvaluationRunId,
   parseEvidenceId,
   parseProduct,
+  parseProductId,
   parseProductModel,
   parseReviewProgram,
   parseRunLineage,
@@ -353,5 +355,99 @@ describe('ProductModel referential integrity', () => {
 
   it('rejects a model that is not an object', () => {
     expect(() => parseProductModel(null)).toThrow(ProductDomainError);
+  });
+
+  // Regression: parseProductModel used to `as`-cast each collection and
+  // defer to buildProductModel, so a malformed element escaped validation
+  // and surfaced as a raw TypeError ("environments.map is not a
+  // function"). A caller catching ProductDomainError would miss it.
+  it('deep-parses every element instead of casting it', () => {
+    const malformed: ReadonlyArray<[string, unknown]> = [
+      ['product', 'not-a-product'],
+      ['environments', 'nope'],
+      ['identities', 42],
+      ['cohorts', {}],
+      ['programs', 'x'],
+    ];
+    for (const [key, badValue] of malformed) {
+      const model: Record<string, unknown> = {
+        product: modelParts().product,
+        environments: [],
+        identities: [],
+        cohorts: [],
+        programs: [],
+      };
+      model[key] = badValue;
+      let thrown: unknown;
+      try {
+        parseProductModel(model);
+      } catch (err) {
+        thrown = err;
+      }
+      expect(thrown, `${key} must be rejected`).toBeInstanceOf(ProductDomainError);
+    }
+  });
+
+  it('reports the offending element path when a nested entity is malformed', () => {
+    expect(() =>
+      parseProductModel({
+        product: modelParts().product,
+        environments: [
+          { id: 'env-staging', productId: 'prd-a', name: 'Staging' }, // missing class/endpoint
+        ],
+        identities: [],
+        cohorts: [],
+        programs: [],
+      }),
+    ).toThrow(/productModel\.environments\[0\]\.environmentClass/);
+  });
+
+  it('rejects a malformed element nested inside an otherwise valid model', () => {
+    expect(() =>
+      parseProductModel({
+        product: modelParts().product,
+        environments: [],
+        identities: [
+          {
+            id: 'idn-alice',
+            productId: 'prd-a',
+            displayName: 'Alice',
+            lifecycle: 'ephemeral',
+            persona: 'p',
+            // stateRetention contradicts the ephemeral lifecycle.
+            capability: {
+              maxConcurrentSessions: 1,
+              stateRetention: 'durable',
+              permittedOrigins: ['https://a.example'],
+            },
+            stateRef: 'alice',
+          },
+        ],
+        cohorts: [],
+        programs: [],
+      }),
+    ).toThrow(/is not permitted for lifecycle "ephemeral"/);
+  });
+
+  it('buildProduct applies the same constraints as parseProduct', () => {
+    // Regression: buildProduct re-checked slug/displayName but not the
+    // array constraints, so it accepted duplicates parseProduct rejects.
+    expect(() =>
+      buildProduct(
+        { id: parseProductId('prd-a'), slug: 'a', displayName: 'A' },
+        { labels: ['x', 'x'] },
+      ),
+    ).toThrow(/duplicates: x/);
+    expect(() =>
+      buildProduct({ id: parseProductId('prd-a'), slug: 'A', displayName: 'A' }),
+    ).toThrow(/lowercase and hyphen-separated/);
+  });
+
+  it('omits absent optionals from a built product rather than storing undefined', () => {
+    const p = buildProduct({ id: parseProductId('prd-a'), slug: 'a', displayName: 'A' }, {
+      description: undefined as unknown as string,
+    });
+    expect('description' in p).toBe(false);
+    expect(JSON.parse(JSON.stringify(p))).toEqual(p);
   });
 });

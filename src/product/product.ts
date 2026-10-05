@@ -48,13 +48,6 @@ export function parseProduct(input: unknown, field = 'product'): Product {
 
   const id = parseProductId(raw['id'], `${field}.id`);
   const slug = requireNonEmptyString(raw['slug'], `${field}.slug`, MAX_SLUG_LENGTH);
-  if (!SLUG_PATTERN.test(slug)) {
-    throw new ProductDomainError(
-      `${field}.slug must be lowercase and hyphen-separated (e.g. "task-tracker")`,
-      `${field}.slug`,
-      { received: slug },
-    );
-  }
   const displayName = requireNonEmptyString(raw['displayName'], `${field}.displayName`);
   const description = optionalString(raw['description'], `${field}.description`, 2_000);
   const owners = optionalStringArray(raw['owners'], `${field}.owners`, (v, f) =>
@@ -63,21 +56,61 @@ export function parseProduct(input: unknown, field = 'product'): Product {
   const labels = optionalStringArray(raw['labels'], `${field}.labels`, (v, f) =>
     requireNonEmptyString(v, f, 64),
   );
-  if (labels !== undefined) {
-    if (labels.length > MAX_TAGS) {
+
+  return makeProduct({ id, slug, displayName, ...optionalBag({ description, owners, labels }) });
+}
+
+/**
+ * Validate typed parts and freeze the result.
+ *
+ * The single place a `Product` is constructed. `parseProduct` (untrusted
+ * input) and `buildProduct` (declared input) both funnel through here, so
+ * a Product cannot be assembled with weaker constraints by either route.
+ */
+function makeProduct(parts: {
+  readonly id: ProductId;
+  readonly slug: string;
+  readonly displayName: string;
+  readonly description?: string;
+  readonly owners?: ReadonlyArray<string>;
+  readonly labels?: ReadonlyArray<string>;
+}): Product {
+  if (!SLUG_PATTERN.test(parts.slug)) {
+    throw new ProductDomainError(
+      'product.slug must be lowercase and hyphen-separated (e.g. "task-tracker")',
+      'product.slug',
+      { received: parts.slug },
+    );
+  }
+  if (parts.labels !== undefined) {
+    if (parts.labels.length > MAX_TAGS) {
       throw new ProductDomainError(
-        `${field}.labels must have at most ${MAX_TAGS} entries`,
-        `${field}.labels`,
-        { length: labels.length, maxLength: MAX_TAGS },
+        `product.labels must have at most ${MAX_TAGS} entries`,
+        'product.labels',
+        { length: parts.labels.length, maxLength: MAX_TAGS },
       );
     }
-    rejectDuplicates(labels, `${field}.labels`);
+    rejectDuplicates(parts.labels, 'product.labels');
   }
-  if (owners !== undefined) {
-    rejectDuplicates(owners, `${field}.owners`);
+  if (parts.owners !== undefined) {
+    rejectDuplicates(parts.owners, 'product.owners');
   }
 
-  return buildProduct({ id, slug, displayName }, optionalBag({ description, owners, labels }));
+  const result: { -readonly [K in keyof Product]: Product[K] } = {
+    id: parts.id,
+    slug: parts.slug,
+    displayName: requireNonEmptyString(parts.displayName, 'product.displayName'),
+  };
+  if (parts.description !== undefined) {
+    result.description = parts.description;
+  }
+  if (parts.owners !== undefined) {
+    result.owners = Object.freeze([...parts.owners]);
+  }
+  if (parts.labels !== undefined) {
+    result.labels = Object.freeze([...parts.labels]);
+  }
+  return Object.freeze(result);
 }
 
 /**
@@ -98,7 +131,7 @@ function optionalBag<T extends object>(values: {
 }
 
 /**
- * Assemble a `Product` from already-validated parts.
+ * Assemble a `Product` from declared identity plus optional metadata.
  *
  * Identity is passed in, never derived: a caller cannot obtain a Product
  * whose id differs from the one it intends to persist.
@@ -111,28 +144,7 @@ export function buildProduct(
     readonly labels?: ReadonlyArray<string>;
   } = {},
 ): Product {
-  if (!SLUG_PATTERN.test(core.slug)) {
-    throw new ProductDomainError('product.slug must be lowercase and hyphen-separated', 'product.slug', {
-      received: core.slug,
-    });
-  }
-  const result: {
-    -readonly [K in keyof Product]: Product[K];
-  } = {
-    id: core.id,
-    slug: core.slug,
-    displayName: requireNonEmptyString(core.displayName, 'product.displayName'),
-  };
-  if (optional.description !== undefined) {
-    result.description = optional.description;
-  }
-  if (optional.owners !== undefined) {
-    result.owners = Object.freeze([...optional.owners]);
-  }
-  if (optional.labels !== undefined) {
-    result.labels = Object.freeze([...optional.labels]);
-  }
-  return Object.freeze(result);
+  return makeProduct({ ...core, ...optionalBag(optional) });
 }
 
 /** Type guard for an already-shaped value crossing a module boundary. */

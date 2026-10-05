@@ -8,6 +8,11 @@ import {
   parseSyntheticIdentity,
   ProductDomainError,
   STATE_RETENTIONS,
+  type IdentityLifecycle,
+  type ProductId,
+  type StateRetention,
+  type SyntheticIdentity,
+  type SyntheticIdentityId,
 } from '../../../src/product/index.js';
 
 const base = {
@@ -153,6 +158,86 @@ describe('Synthetic Identity lifecycle / retention invariant', () => {
   it('exposes the matrix for downstream resolution (#60)', () => {
     expect(() => assertRetentionAllowed('persistent', 'durable')).not.toThrow();
     expect(() => assertRetentionAllowed('persistent', 'none')).toThrow(ProductDomainError);
+  });
+});
+
+describe('lifecycle/retention matrix is a compile-time guarantee', () => {
+  /** Narrowing a `SyntheticIdentity` on `lifecycle` must make the
+   * retention a literal type; the annotated return is the assertion. */
+  function retentionOf(identity: SyntheticIdentity): StateRetention {
+    if (identity.lifecycle === 'ephemeral') {
+      const only: 'none' = identity.capability.stateRetention;
+      return only;
+    }
+    if (identity.lifecycle === 'release') {
+      const allowed: 'session' | 'durable' = identity.capability.stateRetention;
+      return allowed;
+    }
+    const only: 'durable' = identity.capability.stateRetention;
+    return only;
+  }
+
+  it('narrows stateRetention once the lifecycle is known', () => {
+    const make = (lifecycle: string, stateRetention: string, stateRef?: string) =>
+      parseSyntheticIdentity({
+        ...base,
+        lifecycle,
+        persona: 'A returning lead.',
+        capability: {
+          maxConcurrentSessions: 1,
+          stateRetention,
+          permittedOrigins: ['https://staging.example'],
+        },
+        ...(stateRef === undefined ? {} : { stateRef }),
+      });
+
+    expect(retentionOf(make('ephemeral', 'none'))).toBe('none');
+    expect(retentionOf(make('release', 'session', 'r'))).toBe('session');
+    expect(retentionOf(make('persistent', 'durable', 'p'))).toBe('durable');
+  });
+
+  it('rejects a contradictory identity literal at compile time', () => {
+    // This assignment is the point of the discriminated union. If the
+    // union ever degrades to a flat interface, `npm run typecheck`
+    // fails here and the assertion below can never run.
+    const invalid: SyntheticIdentity = {
+      id: 'idn-alice' as SyntheticIdentityId,
+      productId: 'prd-task-tracker' as ProductId,
+      displayName: 'Alice',
+      persona: 'A returning lead.',
+      lifecycle: 'persistent',
+      capability: {
+        maxConcurrentSessions: 1,
+        // 'none' is not permitted for a persistent identity.
+        stateRetention: 'none',
+        permittedOrigins: ['https://staging.example'],
+      },
+    } as unknown as SyntheticIdentity;
+
+    // Reaching this line at all means the compiler did not stop the
+    // contradiction; assert the runtime layer still rejects it.
+    expect(() => parseSyntheticIdentity({ ...invalid })).toThrow(/is not permitted for lifecycle/);
+  });
+
+  it('types the matrix exactly as the runtime table declares it', () => {
+    // RetentionForLifecycle and ALLOWED_STATE_RETENTION are two
+    // encodings of one rule; this pins them to each other.
+    const expectations: ReadonlyArray<[IdentityLifecycle, ReadonlyArray<StateRetention>]> = [
+      ['ephemeral', ['none']],
+      ['release', ['session', 'durable']],
+      ['persistent', ['durable']],
+    ];
+    for (const [lifecycle, retentions] of expectations) {
+      expect(ALLOWED_STATE_RETENTION[lifecycle]).toEqual(retentions);
+      for (const retention of retentions) {
+        expect(() => assertRetentionAllowed(lifecycle, retention)).not.toThrow();
+      }
+      for (const retention of STATE_RETENTIONS) {
+        if (!retentions.includes(retention)) {
+          expect(() => assertRetentionAllowed(lifecycle, retention)).toThrow(ProductDomainError);
+        }
+      }
+    }
   });
 });
 

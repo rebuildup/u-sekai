@@ -94,14 +94,15 @@ export function parseIdentityStateRef(value: unknown, field = 'identity.stateRef
   return raw as IdentityStateRef;
 }
 
-export interface IdentityCapabilityBounds {
+export interface IdentityCapabilityBounds<TRetention extends StateRetention = StateRetention> {
   /** Concurrent sessions this identity may hold. 1..16. */
   readonly maxConcurrentSessions: number;
   /**
    * How much this identity may retain. Constrained by `lifecycle`;
-   * see the module docstring.
+   * see the module docstring. The type parameter is what makes that
+   * constraint visible to the compiler rather than only at runtime.
    */
-  readonly stateRetention: StateRetention;
+  readonly stateRetention: TRetention;
   /**
    * Origins the identity may operate within. Non-empty, and an identity
    * is only ever evaluated inside an environment whose origin appears
@@ -110,20 +111,55 @@ export interface IdentityCapabilityBounds {
   readonly permittedOrigins: ReadonlyArray<string>;
 }
 
-export interface SyntheticIdentity {
+/** The retention a lifecycle admits, as a type. Mirrors `ALLOWED_STATE_RETENTION`. */
+export type RetentionForLifecycle<TLifecycle extends IdentityLifecycle> = TLifecycle extends 'ephemeral'
+  ? 'none'
+  : TLifecycle extends 'release'
+    ? 'session' | 'durable'
+    : TLifecycle extends 'persistent'
+      ? 'durable'
+      : StateRetention;
+
+interface SyntheticIdentityBase {
   readonly id: SyntheticIdentityId;
   readonly productId: ProductId;
   readonly displayName: string;
-  readonly lifecycle: IdentityLifecycle;
   /** Free-form persona / situation description. */
   readonly persona: string;
-  readonly capability: IdentityCapabilityBounds;
   /**
    * Opaque reference to retained state. Present when and only when
    * `capability.stateRetention` is not `none`.
    */
   readonly stateRef?: IdentityStateRef;
 }
+
+/**
+ * A Synthetic Identity, discriminated on `lifecycle`.
+ *
+ * Modelling this as a union rather than a flat interface is what lets
+ * the lifecycle/retention matrix be a compile-time guarantee. A caller
+ * that reaches for `lifecycle === 'persistent'` has a
+ * `capability.stateRetention` the compiler knows is `'durable'`, so an
+ * `ephemeral`/`durable` contradiction is a type error and not only a
+ * runtime one.
+ *
+ * The runtime check in `parseSyntheticIdentity` remains authoritative:
+ * this union constrains code that builds a value, not one that arrives
+ * from configuration.
+ */
+export type SyntheticIdentity =
+  | (SyntheticIdentityBase & {
+      readonly lifecycle: 'ephemeral';
+      readonly capability: IdentityCapabilityBounds<'none'>;
+    })
+  | (SyntheticIdentityBase & {
+      readonly lifecycle: 'release';
+      readonly capability: IdentityCapabilityBounds<'session' | 'durable'>;
+    })
+  | (SyntheticIdentityBase & {
+      readonly lifecycle: 'persistent';
+      readonly capability: IdentityCapabilityBounds<'durable'>;
+    });
 
 const IDENTITY_FIELDS = ['id', 'productId', 'displayName', 'lifecycle', 'persona', 'capability', 'stateRef'] as const;
 const CAPABILITY_FIELDS = ['maxConcurrentSessions', 'stateRetention', 'permittedOrigins'] as const;
@@ -164,25 +200,45 @@ export function parseSyntheticIdentity(input: unknown, field = 'identity'): Synt
     );
   }
 
-  const result: { -readonly [K in keyof SyntheticIdentity]: SyntheticIdentity[K] } = {
+  const base: SyntheticIdentityBase = {
     id,
     productId,
     displayName,
-    lifecycle,
     persona,
-    capability,
+    ...(stateRef === undefined ? {} : { stateRef }),
   };
-  if (stateRef !== undefined) {
-    result.stateRef = stateRef;
+
+  // The narrowing casts below are sound because `parseIdentityCapabilityBounds`
+  // was called with `lifecycle` and therefore already proved, at runtime,
+  // that this retention is the one that lifecycle admits. TypeScript cannot
+  // carry that proof from a runtime check, so it is re-asserted here.
+  switch (lifecycle) {
+    case 'ephemeral':
+      return Object.freeze({
+        ...base,
+        lifecycle,
+        capability: capability as IdentityCapabilityBounds<'none'>,
+      });
+    case 'release':
+      return Object.freeze({
+        ...base,
+        lifecycle,
+        capability: capability as IdentityCapabilityBounds<'session' | 'durable'>,
+      });
+    case 'persistent':
+      return Object.freeze({
+        ...base,
+        lifecycle,
+        capability: capability as IdentityCapabilityBounds<'durable'>,
+      });
   }
-  return Object.freeze(result);
 }
 
-export function parseIdentityCapabilityBounds(
+export function parseIdentityCapabilityBounds<TLifecycle extends IdentityLifecycle = IdentityLifecycle>(
   input: unknown,
   field = 'identity.capability',
-  lifecycle?: IdentityLifecycle,
-): IdentityCapabilityBounds {
+  lifecycle?: TLifecycle,
+): IdentityCapabilityBounds<RetentionForLifecycle<TLifecycle>> {
   const raw = requireRecord(input, field);
   rejectUnknownKeys(raw, CAPABILITY_FIELDS, field);
 
@@ -221,7 +277,14 @@ export function parseIdentityCapabilityBounds(
     );
   }
 
-  return Object.freeze({ maxConcurrentSessions, stateRetention, permittedOrigins: Object.freeze(permittedOrigins) });
+  // Sound for the same reason as the narrowing in parseSyntheticIdentity:
+  // `assertRetentionAllowed` above already proved this retention is the one
+  // `lifecycle` admits, but the proof is a runtime fact.
+  return Object.freeze({
+    maxConcurrentSessions,
+    stateRetention,
+    permittedOrigins: Object.freeze(permittedOrigins),
+  }) as IdentityCapabilityBounds<RetentionForLifecycle<TLifecycle>>;
 }
 
 /**

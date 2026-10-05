@@ -30,13 +30,13 @@
  * those.
  */
 
-import { SyntheticCohort } from './cohort.js';
-import { Environment } from './environment.js';
+import { SyntheticCohort, parseSyntheticCohort } from './cohort.js';
+import { Environment, parseEnvironment } from './environment.js';
 import { ProductDomainError } from './errors.js';
-import { SyntheticIdentity } from './identity.js';
-import { Product } from './product.js';
-import { ReviewProgram } from './program.js';
-import { rejectUnknownKeys, requireRecord } from './validation.js';
+import { SyntheticIdentity, parseSyntheticIdentity } from './identity.js';
+import { Product, parseProduct } from './product.js';
+import { ReviewProgram, parseReviewProgram } from './program.js';
+import { rejectUnknownKeys, requireArray, requireRecord } from './validation.js';
 
 export interface ProductModel {
   readonly product: Product;
@@ -48,16 +48,30 @@ export interface ProductModel {
 
 const MODEL_FIELDS = ['product', 'environments', 'identities', 'cohorts', 'programs'] as const;
 
+/**
+ * Deep-parse a model from untrusted input.
+ *
+ * Every element is parsed with its own `parse*` function before the
+ * cross-entity invariants run. A cast would let a malformed entity
+ * through to `buildProductModel` and surface as a raw `TypeError`
+ * instead of the typed `ProductDomainError` a caller catches, so each
+ * element is validated here rather than trusted.
+ */
 export function parseProductModel(input: unknown, field = 'productModel'): ProductModel {
   const raw = requireRecord(input, field);
   rejectUnknownKeys(raw, MODEL_FIELDS, field);
   return buildProductModel({
-    product: raw['product'] as Product,
-    environments: raw['environments'] as Environment[],
-    identities: raw['identities'] as SyntheticIdentity[],
-    cohorts: raw['cohorts'] as SyntheticCohort[],
-    programs: raw['programs'] as ReviewProgram[],
+    product: parseProduct(raw['product'], `${field}.product`),
+    environments: parseEach(raw['environments'], `${field}.environments`, (v, f) => parseEnvironment(v, f)),
+    identities: parseEach(raw['identities'], `${field}.identities`, (v, f) => parseSyntheticIdentity(v, f)),
+    cohorts: parseEach(raw['cohorts'], `${field}.cohorts`, (v, f) => parseSyntheticCohort(v, f)),
+    programs: parseEach(raw['programs'], `${field}.programs`, (v, f) => parseReviewProgram(v, f)),
   });
+}
+
+function parseEach<T>(value: unknown, field: string, parse: (v: unknown, f: string) => T): T[] {
+  const arr = requireArray(value, field);
+  return arr.map((item, i) => parse(item, `${field}[${i}]`));
 }
 
 /**
