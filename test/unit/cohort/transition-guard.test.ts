@@ -41,10 +41,12 @@ import {
   isCohortStateError,
   identityStateKey,
   parseDurableRecord,
+  type AccountRef,
   type RecordStore,
 } from '../../../src/cohort/index.js';
 import type { SyntheticIdentityId } from '../../../src/product/index.js';
 import {
+  ACCOUNT_REF,
   ENV_STAGING,
   fixedClock,
   makeExplicitCohort,
@@ -558,11 +560,12 @@ describe('the guard exemption list is closed and enforced', () => {
     }
   });
 
-  it('justifies the create-only exemptions: they never overwrite an existing record', async () => {
+  it('justifies the create-only exemptions: a re-declaration never overwrites', async () => {
     // The exemption is justified by the *absence of a write over an
     // existing record*, so that is what is asserted. If a future change
-    // made `declareIdentity` overwrite, this fails and the exemption has
-    // to be withdrawn rather than left standing on a stale reason.
+    // made `declareIdentity` overwrite on re-declaration, this fails and
+    // the exemption has to be withdrawn rather than left standing on a
+    // stale reason.
     const backing = new InMemoryRecordStore();
     const service = new CohortStateService({ store: backing, now: fixedClock() });
     const identity = makeIdentity('persistent', { id: 'idn-exempt', stateRef: 'exempt:state' });
@@ -580,6 +583,39 @@ describe('the guard exemption list is closed and enforced', () => {
     await expect(service.declareIdentity({ ...identity, displayName: 'Different' })).rejects.toThrow();
     expect(await storedRevision(backing, identity.id)).toBe(withState);
     expect((await service.loadIdentity(identity.id)).retainedState).toBeDefined();
+  });
+
+  it('create-only declarations are guarded too: a concurrent first declare is refused', async () => {
+    // The one window a create path does have.
+    //
+    // `declareIdentity` reads, and if the record is absent writes. Those
+    // are two separate awaits, so two concurrent first declarations of
+    // the same id both observe "absent" and both write — and because
+    // `extra.accountRef` is caller-supplied, the loser's `accountRef`
+    // would disappear with no error at all. That is the same
+    // last-write-wins shape as the transition writes, wearing a create
+    // path's clothes, and it is why the exemption in the note above is
+    // safe rather than merely asserted.
+    const backing = new InMemoryRecordStore();
+    const identity = makeIdentity('persistent', { id: 'idn-create-race', stateRef: 'race:state' });
+
+    const aGate = new InterleavingStore(backing);
+    const a = new CohortStateService({ store: aGate, now: fixedClock() });
+    const b = new CohortStateService({ store: backing, now: fixedClock() });
+
+    // B creates the record in the window between A's read and A's write.
+    aGate.armBeforeRead(async () => {
+      await b.declareIdentity(identity, { accountRef: ACCOUNT_REF });
+    }, 1);
+
+    await expect(
+      a.declareIdentity(identity, { accountRef: 'acct-alice-secondary' as AccountRef }),
+    ).rejects.toThrow(/is at revision 1, not the expected 0/);
+
+    // The winner's record is what survives, accountRef included.
+    const stored = await a.loadIdentity(identity.id);
+    expect(stored.accountRef).toBe(ACCOUNT_REF);
+    expect(await storedRevision(backing, identity.id)).toBe(1);
   });
 });
 

@@ -116,13 +116,16 @@ export interface SaveOptions {
  *    A guard this strong therefore cannot be landed from this layer
  *    without a coordinated change on both sides.
  *
- * 2. **The create-only paths have nothing to guard.** `declareIdentity`
- *    and `declareCohort` never overwrite an existing record: an
+ * 2. **The create-only paths have no revision to ask for.** An
  *    identical redeclaration returns the stored record untouched, and a
- *    declaration that differs raises `already_exists`. There is no
- *    last-write-wins window on a path that does not write over what is
- *    there, so requiring a revision from them would mean requiring a
- *    value that carries no information.
+ *    declaration that differs raises `already_exists`, so a caller
+ *    re-declaring has nothing to guard — what it read is what it gets.
+ *    `declareIdentity` is the one place that *creates*, and it is the
+ *    one place that does guard: it writes under `expectedRevision: 0`,
+ *    so a concurrent first declaration is refused instead of silently
+ *    overwriting the winner. `declareCohort` carries no
+ *    caller-supplied extra and its create is therefore not reachable
+ *    with a differing payload; it is left as it was.
  *
  * 3. **Every other mutator takes the option and enforces it.** The
  *    exemption list is closed and is enforced by a test that reflects
@@ -188,6 +191,27 @@ export class CohortStateService {
    * edited persona or lifecycle never takes effect and the caller is told
    * nothing; silently applying it would let a lifecycle change strand the
    * retained state that #57's retention table promised.
+   *
+   * ## Why the create is guarded, and why that is not a contradiction
+   *
+   * This is one of the two create-only paths that the "why
+   * `expectedRevision` is optional" note above exempts from having to
+   * *accept* a revision. It still has one window of its own, and closing
+   * it is why the exemption is safe:
+   *
+   * The read above and the write below are separate awaits, so two
+   * concurrent first declarations of the same id both see "absent" and
+   * both write. The second would silently win — and because `extra`
+   * carries an `accountRef` the stored record may or may not have, the
+   * loser's `accountRef` disappears with no error. That is the same
+   * last-write-wins shape this package exists to prevent, wearing a
+   * create path's clothes.
+   *
+   * So the create passes `expectedRevision: 0` — "the record must not
+   * exist yet" — and a writer that lost the create race is refused with
+   * `revision_conflict` instead of overwriting the winner. A caller that
+   * genuinely wants to re-declare takes the branch above, which is
+   * already idempotent.
    */
   async declareIdentity(
     identity: SyntheticIdentity,
@@ -211,7 +235,7 @@ export class CohortStateService {
       ...initialIdentityState(identity),
       ...(extra.accountRef !== undefined ? { accountRef: extra.accountRef } : {}),
     };
-    return this.put('identity', key, state, IDENTITY_CODEC);
+    return this.put('identity', key, state, IDENTITY_CODEC, { expectedRevision: 0 });
   }
 
   /**
@@ -528,19 +552,16 @@ export class CohortStateService {
    * absent-record case: an expected revision above 0 with no record
    * present is a conflict, not an excuse to create one.
    *
-   * One honest note on the `expectedRevision: 0` branch below. It is the
+   * One note on the `expectedRevision: 0` branch below. It is the
    * documented encoding for "the record must not exist yet", and it is
    * what makes the *other* direction guardable — a caller that saw no
-   * record and then finds one has lost the create-race, and is refused.
-   * That direction is tested. This direction, `0` against a genuinely
-   * absent record, is **not currently reachable through the public
-   * surface**, because every mutator loads its record first and
-   * `loadIdentity` / `loadCohort` raise `identity_not_found` /
-   * `cohort_not_found` before `put` is reached, and the two create paths
-   * pass no options. It is kept because it is the half of the encoding
-   * that makes the other half meaningful — a protocol that only defines
-   * the case it can reject is not a protocol — not because something
-   * calls it today.
+   * record and then finds one has lost the create-race and is refused.
+   * `declareIdentity` is the caller: it creates under `0`, so a
+   * concurrent first declaration of the same id is refused rather than
+   * silently overwriting the winner's `accountRef`. Both halves of the
+   * encoding are therefore load-bearing and both are exercised — the
+   * successful create by every identity in the suite, the refusal by
+   * `create-only declarations are guarded too`.
    */
   private async put<T>(
     kind: DurableRecordKind,
