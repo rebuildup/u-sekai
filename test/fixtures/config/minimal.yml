@@ -1,0 +1,15 @@
+# The smallest file that is a valid u-sekai.yml.
+#
+# Everything optional is absent, so this file is also the clearest
+# statement of the defaults: a Product, one develop environment, its own
+# origin, and an authority envelope that denies everything because
+# nothing was granted.
+version: 1
+
+product:
+  id: acme
+
+environments:
+  develop:
+    class: develop
+    url: https://develop.acme.example

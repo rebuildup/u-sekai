@@ -1,0 +1,72 @@
+# The illustrative "staging + persistent cohort + sandbox billing" case
+# from #55 (docs/product/configuration-and-authority.md), as a loadable
+# u-sekai.yml.
+#
+# Two additions to the shape in the document are deliberate and are the
+# only differences in substance:
+#
+#   * `version:` is this configuration schema's own version. A durable
+#     authority document needs to say which grammar it is written in.
+#   * each environment states `class:`. Inferring `production` from
+#     `productionLike`, or the reverse, from a directory name would make
+#     the most consequential distinction in the model a function of a
+#     word somebody typed.
+#
+# Everything else — the allowed origins, the ${secret:...} reference, the
+# World Operator connectors, the sandbox billing mode, the two cohorts
+# and the daily cadence — is as the document wrote it.
+#
+# Note the absence of a `budget:` block, which the document's example
+# also omits. That is the fail-closed default in action: see
+# DEFAULT_PROGRAM_BUDGET. This file is a valid configuration; it is not
+# a configuration that authorises a run to spend anything.
+version: 1
+
+product:
+  id: example
+  displayName: Example Product
+
+environments:
+  staging:
+    class: staging
+    url: https://staging.example.com
+    allowedOrigins:
+      - https://staging.example.com
+
+    secrets:
+      accountFactoryToken: ${secret:ACCOUNT_FACTORY_TOKEN}
+
+    world:
+      accounts:
+        provider: http
+        endpoint: https://staging.example.com/test-support/users
+
+      email:
+        provider: test-inbox
+
+      billing:
+        provider: stripe
+        mode: test
+
+    authority:
+      destructiveActions: false
+      externalCommunication: false
+      realMoney:
+        enabled: false
+        maxAmount: 0
+
+cohorts:
+  new-users:
+    size: 10
+    lifecycle: ephemeral
+
+  returning-users:
+    size: 10
+    lifecycle: persistent
+
+reviewPrograms:
+  staging-continuous:
+    environment: staging
+    cohort: returning-users
+    trigger:
+      cadence: daily
