@@ -50,6 +50,18 @@ export const COHORT_STATE_ERROR_CODES = [
   'integrity_mismatch',
   /** The operation is not legal for the identity's lifecycle or status. */
   'invalid_transition',
+  /**
+   * A write supplied an `expectedRevision` the stored record has moved
+   * past.
+   *
+   * Separate from `invalid_transition` because the two call for
+   * different responses. A lifecycle violation is a bug in the caller
+   * that will recur however often it is retried; a revision conflict
+   * means the record moved, which is information the caller can act on.
+   * Collapsing them into one code forces a caller that must handle a
+   * conflict to also catch every malformed transition.
+   */
+  'revision_conflict',
   /** An existing record was overwritten through a create-only path. */
   'already_exists',
   /** A cohort's membership rule cannot be satisfied by the stored identities. */
