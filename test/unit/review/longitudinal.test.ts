@@ -14,8 +14,13 @@ import {
   isReleaseTransitionComparison,
   parseCohortId,
   parseEnvironmentId,
+  parseEvaluationRunId,
+  parseProductId,
   parseReviewProgramId,
+  parseRunLineage,
+  parseSyntheticIdentityId,
 } from '../../../src/product/index.js';
+import type { RunLineage } from '../../../src/product/index.js';
 import {
   CHANGE_KINDS,
   EVALUATION_MODES,
@@ -391,5 +396,150 @@ describe('longitudinal references are validated as part of the finding', () => {
       relatedFindingIds: ['fnd-0000abcd'],
     });
     expect(l.relatedFindingIds).toEqual(['fnd-0000abcd']);
+  });
+});
+
+/**
+ * The cross-environment boundary, attempted to be falsified.
+ *
+ * #57 deliberately removed `environmentId` from
+ * `isReleaseTransitionComparison`'s scope, so a claim gate written
+ * against the older, stricter predicate would silently admit more than
+ * intended. This block exists to prove the relaxation did not make the
+ * gate vacuous.
+ *
+ * Every rejection below is **cross-environment** and differs from the
+ * one accepted case by exactly one thing. If any of these were
+ * accepted, the gate would be admitting a comparison that is not a
+ * returning-user observation of the same durable population — the
+ * falsification ADR-0011's returning-user thesis depends on.
+ *
+ * What this block cannot falsify, and says so rather than papering
+ * over: `RunLineage` carries **no version identity**, so nothing in
+ * this layer can verify that a release transition actually crossed a
+ * version boundary rather than two runs of one deployment. See the
+ * `longitudinal.ts` module docstring.
+ */
+describe('the cross-environment boundary is falsifiable', () => {
+  const STAGING = parseEnvironmentId('env-staging');
+  const PRODUCTION = parseEnvironmentId('env-production');
+  const ALICE = parseSyntheticIdentityId('idn-alice');
+  const CAROL = parseSyntheticIdentityId('idn-carol');
+
+  /** A run in `env-staging`, fully parameterised so one axis can move at a time. */
+  function stagingRun(overrides: Record<string, unknown> = {}): RunLineage {
+    return parseRunLineage({
+      runId: parseEvaluationRunId('run-2026-10-01-0001'),
+      ...target,
+      environmentId: STAGING,
+      identityIds: [ALICE],
+      startedAt: '2026-10-01T00:00:00Z',
+      ...overrides,
+    });
+  }
+
+  /** A later run in `env-production`, parameterised the same way. */
+  function productionRun(overrides: Record<string, unknown> = {}): RunLineage {
+    return parseRunLineage({
+      runId: parseEvaluationRunId('run-2026-10-07-0001'),
+      ...target,
+      environmentId: PRODUCTION,
+      identityIds: [ALICE],
+      startedAt: '2026-10-07T00:00:00Z',
+      ...overrides,
+    });
+  }
+
+  it('accepts exactly the canonical case: same scope, shared identity, two deployments', () => {
+    const l = parseLongitudinalChange({
+      mode: 'releaseTransition',
+      change: 'regressed',
+      baseline: stagingRun(),
+      observed: productionRun(),
+    });
+    expect(l.change).toBe('regressed');
+    expect(l.baseline?.environmentId).toBe(STAGING);
+    expect(l.observed.environmentId).toBe(PRODUCTION);
+    expect(isReleaseTransitionComparison(stagingRun(), productionRun())).toBe(true);
+  });
+
+  it('rejects cross-environment with no shared identity — not a returning user', () => {
+    const baseline = stagingRun({ identityIds: [CAROL] });
+    expect(baseline.environmentId).not.toBe(productionRun().environmentId);
+    expect(() =>
+      parseLongitudinalChange({
+        mode: 'releaseTransition',
+        change: 'regressed',
+        baseline,
+        observed: productionRun(),
+      }),
+    ).toThrow(/requires a joinable baseline/);
+  });
+
+  it('rejects cross-environment under a different cohort — not the same population', () => {
+    expect(() =>
+      parseLongitudinalChange({
+        mode: 'releaseTransition',
+        change: 'regressed',
+        baseline: stagingRun({ cohortId: parseCohortId('coh-edge') }),
+        observed: productionRun(),
+      }),
+    ).toThrow(/requires a joinable baseline/);
+  });
+
+  it('rejects cross-environment under a different program — not the same policy', () => {
+    expect(() =>
+      parseLongitudinalChange({
+        mode: 'releaseTransition',
+        change: 'regressed',
+        baseline: stagingRun({ programId: parseReviewProgramId('rp-weekly') }),
+        observed: productionRun(),
+      }),
+    ).toThrow(/requires a joinable baseline/);
+  });
+
+  it('rejects a cross-environment pair that is the same run observed twice', () => {
+    const sameRun = productionRun({ runId: 'run-2026-10-01-0001' });
+    expect(() =>
+      parseLongitudinalChange({
+        mode: 'releaseTransition',
+        change: 'regressed',
+        baseline: stagingRun(),
+        observed: sameRun,
+      }),
+    ).toThrow(/requires a joinable baseline/);
+  });
+
+  it('rejects cross-environment under a different product', () => {
+    expect(() =>
+      parseLongitudinalChange({
+        mode: 'releaseTransition',
+        change: 'regressed',
+        baseline: stagingRun({ productId: parseProductId('prd-other') }),
+        observed: productionRun(),
+      }),
+    ).toThrow(/requires a joinable baseline/);
+  });
+
+  it('rejects every one of those cases at the Finding level too, not just the helper', () => {
+    // The gate must not be bypassable by going through parseFinding.
+    for (const baseline of [
+      stagingRun({ identityIds: [CAROL] }),
+      stagingRun({ cohortId: parseCohortId('coh-edge') }),
+      stagingRun({ programId: parseReviewProgramId('rp-weekly') }),
+      stagingRun({ productId: parseProductId('prd-other') }),
+    ]) {
+      expect(() =>
+        parseFinding(
+          findingOn({
+            mode: 'releaseTransition',
+            change: 'regressed',
+            baseline,
+            observed: productionRun(),
+            ...{},
+          }, { target: { ...target, environmentId: PRODUCTION } }),
+        ),
+      ).toThrow(/requires a joinable baseline/);
+    }
   });
 });

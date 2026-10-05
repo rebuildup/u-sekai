@@ -40,6 +40,49 @@
  *    separate "longitudinal finding" type. A consumer that handles the
  *    envelope handles all three of ADR-0011's evaluation modes.
  *
+ * ## The join is necessary, not sufficient — and that is stated, not assumed
+ *
+ * `isReleaseTransitionComparison` is a *necessary* condition for a
+ * comparative claim: two runs that are not the same program scope
+ * observed by a returning identity are certainly not a transition. It
+ * is not a *sufficient* one, and this module does not pretend otherwise.
+ *
+ * A sufficient condition needs the claim itself, which is what `mode`
+ * carries. `releaseTransition` says "a persistent cohort met an earlier
+ * and a newer version"; `continuous` says "the same program was
+ * observed again"; `pointInTime` says "no comparison was made". The join
+ * plus the declared mode together are what a consumer reads, and a
+ * consumer that reads only the join has been told less than it needs.
+ *
+ * #57 relaxed this predicate at `ce71c14`: it no longer requires an
+ * equal `environmentId`, because the environment is the axis a release
+ * transition varies along. That relaxation is real, so the gate was
+ * re-derived against it rather than assumed to still hold. What it did
+ * *not* do is weaken the claim: the guards that remain — same
+ * `programKey`, distinct runs, at least one shared identity — are
+ * exactly the conditions that make the observation a *returning-user*
+ * one. `test/unit/review/longitudinal.test.ts` attempts to falsify that
+ * with cross-environment cases that must be rejected, each differing
+ * from the one accepted case by a single axis.
+ *
+ * ### What cannot be checked here, stated rather than papered over
+ *
+ * `RunLineage` carries **no version identity** — no release tag, no
+ * deployment revision. So nothing in this layer can verify that a
+ * release transition actually crossed a *version* boundary, rather than
+ * comparing two runs of one deployment under two environment names.
+ * ADR-0011 defines the mode over versions, and that definition is
+ * currently unverifiable from a `RunLineage`.
+ *
+ * The temptation is to add a `versionId` to `LongitudinalChange`. That
+ * would be a copy the run never made, free to drift from the lineage it
+ * describes — the same failure mode this module exists to prevent, and
+ * the reason the baseline is a `RunLineage` reference rather than a
+ * record. The missing piece is version identity on the run, which is
+ * #57's durable-model surface and #63's runtime to supply, not this
+ * ticket's to invent. Tracked as a gap against the durable model rather
+ * than papered over with a field.
+ *
  * ## The baseline is a reference, not a copy
  *
  * `baseline` and `observed` are `RunLineage` values from #57 — the
