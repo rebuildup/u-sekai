@@ -43,7 +43,6 @@
  */
 
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
-import { AddressInfo } from 'node:net';
 
 import { createAppRoutes } from '../../../src/demo/environment/app.js';
 import { createDemoState, type DemoState } from '../../../src/demo/environment/state.js';
@@ -109,13 +108,11 @@ export interface EnvironmentPair {
    * which is the observable, resumable, idempotent path.
    */
   advancePointer(): void;
-  closeAll(): Promise<void>;
 }
 
 /** Per-instance mutable bookkeeping. Not part of any identity. */
 interface InstanceInternals {
   pointerTarget: 'before' | 'after';
-  servers: Array<{ close: () => Promise<void> }>;
 }
 
 /**
@@ -158,11 +155,24 @@ export async function startEnvironmentInstance(
     });
   });
 
-  const address = server.address() as AddressInfo;
-  const internalsEntry: InstanceInternals = { pointerTarget: 'before', servers: [] };
-  internals.set(key, internalsEntry);
+  // `server.address()` is `string | AddressInfo | null`. Casting it
+  // straight through would silently produce `port: undefined` for a
+  // server that never bound, so the shape is checked: an environment
+  // whose port is unknown cannot be addressed, and pretending
+  // otherwise would hand the caller a baseUrl that never answers.
+  const address = server.address();
+  if (address === null || typeof address === 'string') {
+    await new Promise<void>((resolve) => {
+      server.close(() => resolve());
+    });
+    throw new EnvironmentIsolationError(
+      'server did not bind to a TCP port, so this environment is not addressable',
+      'instance.baseUrl',
+    );
+  }
+  internals.set(key, { pointerTarget: 'before' });
 
-  const instance: EnvironmentInstance = {
+  return {
     key,
     declaration,
     version: declaration.version,
@@ -176,18 +186,6 @@ export async function startEnvironmentInstance(
       });
     },
   };
-
-  // Registered so closeAll() can tear the pair down even if the caller
-  // only kept the pair handle.
-  internalsEntry.servers.push({
-    close: async () => {
-      await new Promise<void>((resolve, reject) => {
-        server.close((err) => (err ? reject(err) : resolve()));
-      });
-    },
-  });
-
-  return instance;
 }
 
 async function handleRequest(
@@ -275,10 +273,6 @@ export async function startEnvironmentPair(
         );
       }
       entry.pointerTarget = 'after';
-    },
-    closeAll: async () => {
-      await before.close();
-      await after.close();
     },
   };
 }
