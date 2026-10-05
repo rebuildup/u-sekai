@@ -71,13 +71,14 @@
 
 import {
   assertDispositionTransition,
+  DISPOSITION_KINDS,
   INITIAL_DISPOSITION_STATE,
   isDispositionCorrection,
   parseDisposition,
 } from '../review/index.js';
 import type { Disposition, DispositionKind, DispositionState } from '../review/index.js';
 import type { FindingId } from '../review/index.js';
-import { FeedbackContractError } from './errors.js';
+import { FeedbackContractError, asFeedbackContractError } from './errors.js';
 import { rejectDuplicates, requireArray, requireRecord } from './validation.js';
 
 /**
@@ -172,7 +173,11 @@ export function appendDisposition(
   input: unknown,
   field = 'disposition',
 ): DispositionLedger {
-  const disposition = parseDisposition(input, field);
+  // #61 refuses an illegal `Disposition` with a `ReviewContractError`.
+  // Re-raised here so a caller of this layer has exactly one error type
+  // to catch, with #61's diagnosis still readable in the message — the
+  // contract `errors.ts` states and `index.ts` publishes.
+  const disposition = asFeedbackContractError(field, () => parseDisposition(input, field));
   const existingIndex = ledger.events.findIndex((e) => e.disposition.id === disposition.id);
 
   if (existingIndex >= 0) {
@@ -307,15 +312,21 @@ export function eventCountByKind(
  * on purpose. `Object.fromEntries(...)` would typecheck against any
  * number of kinds and would silently produce a record *missing* a kind
  * if #61 ever adds one; here, a new kind in #61 is a compile error
- * until this function is updated. `test/unit/feedback/kpi.test.ts` pins
- * the key order against `DISPOSITION_KINDS` so a reordering is caught
- * too, not just an addition.
+ * until this function is updated. `test/unit/feedback/ledger.test.ts`
+ * pins the key order against `DISPOSITION_KINDS` so a reordering is
+ * caught too, not just an addition.
  *
  * The literal is in `DISPOSITION_KINDS` order on purpose — that order
- * is the total order the record's keys are returned in.
+ * is the total order the record's keys are returned in — and
+ * `assertKindCountKeyOrder` checks it at runtime, because the *type*
+ * pins the set of keys but cannot pin their order.
+ *
+ * Exported (not re-exported from `src/feedback/index.ts`) so `kpi.ts`
+ * derives its kind breakdown from this one literal rather than keeping
+ * a second copy that could drift.
  */
-function emptyKindCounts(): Record<DispositionKind, number> {
-  return {
+export function emptyKindCounts(): Record<DispositionKind, number> {
+  const counts: Record<DispositionKind, number> = {
     accepted: 0,
     invalid: 0,
     alreadyKnown: 0,
@@ -323,6 +334,30 @@ function emptyKindCounts(): Record<DispositionKind, number> {
     needsHumanResearch: 0,
     unresolved: 0,
   };
+  assertKindCountKeyOrder(counts);
+  return counts;
+}
+
+/**
+ * Refuse a kind-count record whose key order is not #61's.
+ *
+ * The declared type makes a *missing* or *extra* key a compile error;
+ * it says nothing about order, and this module promises a total order
+ * rather than an insertion order. Comparing position by position — not
+ * as a set — is the whole point.
+ */
+function assertKindCountKeyOrder(counts: Record<DispositionKind, number>): void {
+  const declared = [...DISPOSITION_KINDS];
+  const actual = Object.keys(counts);
+  const ordered = actual.length === declared.length && actual.every((key, i) => key === declared[i]);
+  if (!ordered) {
+    throw new FeedbackContractError(
+      `kind-count keys must be in DISPOSITION_KINDS order so the record has a total key order; ` +
+        `expected [${declared.join(', ')}] but the literal is [${actual.join(', ')}]`,
+      'kindCounts',
+      { expected: declared, received: actual },
+    );
+  }
 }
 
 /** Total order on handle strings, used for every sorted output. */

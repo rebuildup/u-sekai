@@ -57,12 +57,13 @@
  *
  * Every ratio is derived from two non-negative operands, and rounding
  * is applied to `numerator * 10^d / denominator` rather than to a
- * pre-divided double. The product is exact for any operand this module
- * produces (integer counts, and a cost bounded by the caller), and
- * `Math.round` on a non-negative value is round-half-up — a total,
- * locale-independent rule that never falls back to "round to even" the
- * way `toFixed` can. So `rounded` is identical on every platform and
- * every run.
+ * pre-divided double. `Math.round` on a non-negative value is
+ * round-half-up — a total, locale-independent rule that never falls
+ * back to "round to even" the way `toFixed` can — so `rounded` is
+ * identical on every platform and every run. The scaled product is
+ * exact for any integer count; for a caller-supplied cost it is exact
+ * only while it stays within the exactly-representable integer range.
+ * See `roundRatioHalfUp` for both bounds.
  *
  * ## Empty denominators are `null`, never `NaN` and never skipped
  *
@@ -100,12 +101,21 @@
  * metric doc defers those until design-partner data exists.
  */
 
-import { indexFindings, isCustomerDecision, DISPOSITION_KINDS } from '../review/index.js';
+import { indexFindings, isCustomerDecision } from '../review/index.js';
 import type { Disposition, DispositionKind, Finding, SetupFailure } from '../review/index.js';
 import { assertFindingSet, splitReviewOutcomes } from './aggregate.js';
-import { FeedbackContractError } from './errors.js';
-import { compareHandles, currentDispositions, type DispositionLedger } from './ledger.js';
-import { requireNonEmptyString, requireNonNegativeFinite } from './validation.js';
+import { FeedbackContractError, asFeedbackContractError } from './errors.js';
+import {
+  compareHandles,
+  currentDispositions,
+  emptyKindCounts,
+  type DispositionLedger,
+} from './ledger.js';
+import {
+  requireNonEmptyString,
+  requireNonNegativeFinite,
+  requireRecord,
+} from './validation.js';
 
 /** Decimal places every `rounded` ratio and cost figure is reported at. */
 export const KPI_RATIO_DECIMALS = 6;
@@ -132,10 +142,10 @@ export const MAX_COST_UNIT_LENGTH = 40;
 
 /** Parse and bound a cost figure supplied by the caller. */
 export function parseEvaluationCost(input: unknown, field = 'evaluationCost'): EvaluationCost {
-  const raw = input as { amount?: unknown; unit?: unknown } | null;
+  const raw = requireRecord(input, field);
   return Object.freeze({
-    amount: requireNonNegativeFinite(raw?.amount, `${field}.amount`),
-    unit: requireNonEmptyString(raw?.unit, `${field}.unit`, MAX_COST_UNIT_LENGTH),
+    amount: requireNonNegativeFinite(raw['amount'], `${field}.amount`),
+    unit: requireNonEmptyString(raw['unit'], `${field}.unit`, MAX_COST_UNIT_LENGTH),
   });
 }
 
@@ -431,9 +441,7 @@ function dispositionCoverageOf(t: DecisionTally): RatioKpi {
  * ratio.
  */
 export function costPerVerifiedFinding(input: KpiInput): CostPerFindingKpi {
-  const t = tallyDecisions(input);
-  const verified = t.all.filter((f) => f.verification?.outcome === 'confirmed').map((f) => f.id);
-  return costPerFindingKpi(input.evaluationCost, verified.length);
+  return costPerVerifiedFindingFrom(tallyDecisions(input), input.evaluationCost);
 }
 
 /**
@@ -471,7 +479,17 @@ export interface KpiSnapshot {
   readonly costPerAcceptedFinding: CostPerFindingKpi;
   /** Current-disposition counts per kind, keyed in `DISPOSITION_KINDS` order. */
   readonly byKind: Readonly<Record<DispositionKind, number>>;
-  /** Findings with a current disposition, in id order. */
+  /**
+   * Findings with a current disposition, in id order.
+   *
+   * Includes *open* dispositions (`unresolved`, `needsHumanResearch`):
+   * a report enumerating "what did the customer say about each finding"
+   * must not silently omit the ones where the answer was "nobody has
+   * decided", which is the exclusion `DispositionBasis` exists to make
+   * visible. Which of these are *decisions* is `basis`'s job, and the
+   * decision-only subset is what each rate's `numeratorFindingIds`
+   * and denominator describe.
+   */
   readonly dispositioned: ReadonlyArray<readonly [string, Disposition]>;
   /** Findings with no disposition at all, in id order. */
   readonly undispositionedFindingIds: ReadonlyArray<string>;
@@ -499,8 +517,8 @@ export function computeKpiSnapshot(input: KpiInput): KpiSnapshot {
     ),
     byKind: kindCountsOf(t),
     dispositioned: Object.freeze(
-      [...t.decisions.entries()]
-        .map(([id, entry]) => [id, entry.disposition] as const)
+      [...t.decisions.values(), ...t.openDisposition]
+        .map((entry) => [entry.finding.id, entry.disposition] as const)
         .sort((a, b) => compareHandles(a[0], b[0])),
     ),
     undispositionedFindingIds: Object.freeze(
@@ -604,6 +622,20 @@ export const UNCOMPUTED_KPI_TERMS: ReadonlyArray<{
       'EvaluationCost.unit.',
   }),
   Object.freeze({
+    term: 'the reportable precision of a cost-per-finding',
+    clause: 'Unit-economics KPIs, cost per verified / accepted finding',
+    why:
+      'CostPerFindingKpi.rounded carries a ratio precision (KPI_RATIO_DECIMALS), not a currency ' +
+      'precision, because the unit is undeclared — see the entry above. "0.5 per finding" and ' +
+      '"500000 micros per finding" are the same quotient in different units, and no clause says ' +
+      'how many decimal places of an undeclared unit are reportable. Rounding to six places ' +
+      'asserts a scale the specification has not chosen.',
+    needs:
+      'The declared cost unit from the service configuration (#66). Once a unit is declared, the ' +
+      'rounding rule for that unit is a product decision to state alongside it — this ticket ' +
+      'does not get to pick one.',
+  }),
+  Object.freeze({
     term: 'the numerator of "Time to first useful finding"',
     clause: 'Customer-value KPIs, Time to first useful finding',
     why:
@@ -667,7 +699,9 @@ interface DecisionTally {
  */
 function tallyDecisions(input: KpiInput): DecisionTally {
   const raw = assertFindingSet(input.findings);
-  const index = indexFindings(raw);
+  // `indexFindings` refuses a duplicate id with a `ReviewContractError`;
+  // re-raised so a caller catches one error type, per `errors.ts`.
+  const index = asFeedbackContractError('findings', () => indexFindings(raw));
   // Sorted once, on entry: every derived list inherits a total order
   // from here rather than re-sorting or trusting input order.
   const all = [...index.values()].sort((a, b) => compareHandles(a.id, b.id));
@@ -828,31 +862,38 @@ function costPerVerifiedFindingFrom(
   t: DecisionTally,
   cost: EvaluationCost | undefined,
 ): CostPerFindingKpi {
-  const verified = t.all.filter((f) => f.verification?.outcome === 'confirmed');
-  return costPerFindingKpi(cost, verified.length);
+  return costPerFindingKpi(cost, verifiedFindingCount(t));
+}
+
+/**
+ * How many findings a verification pass confirmed.
+ *
+ * Only `confirmed` counts. `refuted`, `inconclusive` and `notRun` are
+ * attempts that did not establish the claim, and a *refuted* pass must
+ * not lower the cost of a verified finding — the whole point of this
+ * KPI is to route spend toward what survives checking.
+ *
+ * Over `t.all` (every finding), not the dispositioned subset: the
+ * metric doc's stated purpose is routing spend "before customer
+ * disposition is available".
+ */
+function verifiedFindingCount(t: DecisionTally): number {
+  return t.all.filter((f) => f.verification?.outcome === 'confirmed').length;
 }
 
 /**
  * Current-disposition kind counts, keyed in `DISPOSITION_KINDS` order.
  *
- * The object literal is typed `Record<DispositionKind, number>` so a
- * kind added to #61 becomes a compile error here rather than a
- * silently missing key. The literal is in #61's declared order because
- * that order is the total order these keys are returned in; a test pins
- * it so a reordering is caught as well as an addition. Open kinds are
- * absent from `decisions` and so stay zero — an open finding has no
- * current *kind* for a customer-value breakdown, only an open state.
+ * The zero-filled literal lives in `ledger.ts` (`emptyKindCounts`) and
+ * is imported rather than restated, so a kind added to #61 is a
+ * compile error in exactly one place and the two kind-count surfaces
+ * cannot drift apart. Open kinds are absent from `decisions` and so
+ * stay zero — an open finding has no current *kind* for a
+ * customer-value breakdown, only an open state.
  */
 function kindCountsOf(t: DecisionTally): Readonly<Record<DispositionKind, number>> {
-  const counts: Record<DispositionKind, number> = {
-    accepted: 0,
-    invalid: 0,
-    alreadyKnown: 0,
-    wontFix: 0,
-    needsHumanResearch: 0,
-    unresolved: 0,
-  };
-  for (const [, entry] of t.decisions) {
+  const counts = emptyKindCounts();
+  for (const entry of t.decisions.values()) {
     counts[entry.disposition.kind] += 1;
   }
   return Object.freeze(counts);
@@ -862,11 +903,28 @@ function kindCountsOf(t: DecisionTally): Readonly<Record<DispositionKind, number
  * Round `numerator / denominator` half-up to `decimals` places.
  *
  * Rounding the ratio of the operands rather than a pre-divided double
- * keeps the result identical on every platform. `Math.round` rounds
- * toward positive infinity, which for the non-negative operands every
- * KPI here produces is exactly round-half-up; a `0.5` tie never falls
- * to "round to even" the way `toFixed` can on some engines, and never
- * depends on the ambient locale.
+ * avoids one source of platform variance. `Math.round` rounds toward
+ * `+Infinity`, so it is round-half-up **only for a non-negative
+ * operand**; for `-1 / 2` it returns `-0` rather than the `-1` the name
+ * promises. Every KPI in this module has a non-negative numerator
+ * (a count, or a cost already refused by `requireNonNegativeFinite`),
+ * so rather than leave a public helper whose behaviour depends on the
+ * sign of its argument, the non-negative case is the whole contract
+ * and anything else is refused.
+ *
+ * ## Where the result is exact, and where it is merely deterministic
+ *
+ * The scaled product `numerator * 10 ** decimals` is exact for every
+ * count-based operand here, and for a cost while that product stays
+ * within the exactly-representable integer range (`2 ** 53 - 1`). Past
+ * that the product rounds, and the returned figure is still identical
+ * on every run and every platform — IEEE-754 arithmetic is
+ * deterministic — but it is no longer an exactly-rounded quotient. A
+ * caller reporting a currency at a scale where this matters should not
+ * trust `rounded`; see `UNCOMPUTED_KPI_TERMS`, which records that the
+ * cost unit is not yet declared and that `rounded` on a
+ * `CostPerFindingKpi` is therefore a ratio-precision figure and not a
+ * currency-precision one.
  */
 export function roundRatioHalfUp(
   numerator: number,
@@ -887,6 +945,15 @@ export function roundRatioHalfUp(
         'a reported KPI',
       'numerator',
       { numerator, denominator },
+    );
+  }
+  if (numerator < 0) {
+    throw new FeedbackContractError(
+      `roundRatioHalfUp is round-half-up, which Math.round only implements for a non-negative ` +
+        `operand; received ${numerator}. A KPI numerator is a count or an already-validated ` +
+        `non-negative cost, so a negative one is a caller error rather than a value to round`,
+      'numerator',
+      { numerator, denominator, decimals },
     );
   }
   const factor = 10 ** decimals;
