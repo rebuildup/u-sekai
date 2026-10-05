@@ -832,6 +832,43 @@ describe('subcommand widening: the union was widened, not cast', () => {
     expect(result.stdout).toContain('5  the run completed and reported product findings');
   });
 
+  it('says so when a re-run rewrites an existing artifact directory', async () => {
+    // A run id is derived from the plan, and the plan from the trigger,
+    // so running the same program by hand twice reuses the id — which
+    // is #63's re-run semantics, not a second run. The artifact
+    // directory is therefore rewritten rather than added to. A user who
+    // did not know that would read a missing run as a lost one.
+    const config = await writeConfig('rerun.yml', runnableConfig(server.baseUrl));
+    const state = stateDir('rerun-state');
+    const runArgs = [
+      'program',
+      'run',
+      'local-continuous',
+      '--config',
+      config,
+      '--state-dir',
+      state,
+      '--version-label',
+      '2026.10.14',
+      '--task',
+      'Add a task to the list.',
+      '--max-steps',
+      '4',
+    ];
+
+    const first = await runCli(runArgs);
+    expect(first.code).toBe(0);
+    expect(first.stdout).not.toContain('already existed');
+
+    const second = await runCli(runArgs);
+    expect(second.code).toBe(0);
+    expect(second.stdout).toContain('already existed and was rewritten');
+    // The same run id, which is what makes the note true.
+    const firstRun = /run: (\S+)/.exec(first.stdout)![1];
+    const secondRun = /run: (\S+)/.exec(second.stdout)![1];
+    expect(secondRun).toBe(firstRun);
+  });
+
   it('names its subcommand when `program` is given none', async () => {
     const result = await runCli(['program']);
 

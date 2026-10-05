@@ -61,6 +61,7 @@
  * runtime failure rather than as a process-level capability signal.
  */
 
+import { promises as fs } from 'node:fs';
 import * as path from 'node:path';
 
 import { isCohortStateError, CohortStateService, FileRecordStore } from '../cohort/index.js';
@@ -79,6 +80,7 @@ import { planEvaluation, parseTriggerDeliveryId } from '../program/index.js';
 import type { EvaluationPlan, PlanDecision } from '../program/index.js';
 import {
   defaultParticipantProfile,
+  deriveRunId,
   isRuntimeIntegrationError,
   runEvaluation,
   type EvaluationRunResult,
@@ -471,6 +473,12 @@ async function runConfiguredProgram(
   // it dispatches nothing and therefore records no observation.
   const observedVersion = args.flags['dry-run'] === undefined ? requireVersionLabel(args) : undefined;
 
+  // Sequential, and deliberately so. Each `declareIdentity` is a
+  // read-modify-write against the same durable store, and #60 refuses a
+  // re-declaration that differs — so two concurrent declarations of the
+  // same identity would race on its revision rather than run in
+  // parallel. `Promise.all` here would trade a correctness property for
+  // a latency win that does not matter on a local run.
   for (const identity of identitiesForCohort(config, cohort)) {
     await service.declareIdentity(identity);
   }
@@ -501,21 +509,41 @@ async function runConfiguredProgram(
     return 0;
   }
 
-  const runtimeConfig = buildRuntimeConfiguration(config, plan, program, args, service, stateDir);
   // Narrowed rather than cast. `--dry-run` returned above, so this
   // branch is unreachable; it is written as a real refusal instead of an
   // assertion so that a future edit which reorders the dry-run return
   // produces a diagnostic rather than an `undefined` reaching #63.
+  //
+  // Checked before the runtime configuration is assembled so the
+  // ordering matches the reason given at the top of this function: a
+  // missing flag must cost a diagnostic, not a half-built run.
   if (observedVersion === undefined) {
     throw new ProgramUsageError('--version-label is required to run a program');
   }
+
+  const runtimeConfig = buildRuntimeConfiguration(config, plan, program, args, service, stateDir);
+
+  // Read before the run, because after the run the directory always
+  // exists. The run id is derived from the plan, and #63 declares no
+  // override here, so the id this run will use is knowable now.
+  const artifactDir = path.join(runtimeConfig.experiment.outDir, deriveRunId(plan));
+  const rewroteExistingArtifact = await directoryExists(artifactDir);
 
   const result = await runEvaluation(runtimeConfig, {
     plan,
     observedVersion,
     persist: true,
   });
-  return reportRunResult(result, out);
+  return reportRunResult(result, out, rewroteExistingArtifact);
+}
+
+async function directoryExists(target: string): Promise<boolean> {
+  try {
+    const stats = await fs.stat(target);
+    return stats.isDirectory();
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -627,10 +655,13 @@ function buildRuntimeConfiguration(
   stateDir: string,
 ): RuntimeConfiguration {
   const environmentId = plan.target.environmentId;
-  const environment = config.environments.find((e) => e.id === environmentId);
-  if (environment === undefined) {
-    // Cannot happen while the plan came from this config, but a refusal
-    // is cheaper than a run that resolves the authority from nowhere.
+  // Resolved, then not read. A plan whose target environment is absent
+  // from the file it was planned from is a defect worth refusing rather
+  // than running against an environment the file never described — but
+  // the resolved value itself is unused, because no World Operator is
+  // built (see below) and therefore nothing here has an authority
+  // envelope to gate.
+  if (!config.environments.some((e) => e.id === environmentId)) {
     throw new ProgramUsageError(
       `environment ${environmentId} is not in ${config.provenance.configPath}`,
     );
@@ -685,8 +716,12 @@ function buildRuntimeConfiguration(
    * provisioning plan does become declarable, the setup belongs here,
    * and it must go through `buildWorldOperator` so #59's gate still
    * authorises it — never around it.
+   *
+   * The environment's authority envelope is deliberately not read. This
+   * function has no use for it: nothing here dispatches a privileged
+   * effect, so the envelope has nothing to gate. It is validated and
+   * reported by `config validate`, which is where a user reads it.
    */
-  void environment;
   return base;
 }
 
@@ -756,13 +791,30 @@ function reportNotDue(
  * echoing internal traces. #63 has already written every record to
  * disk; the terminal is a summary and a pointer, not a second copy.
  */
-function reportRunResult(result: EvaluationRunResult, out: OutputSink): ProgramExitCode {
+function reportRunResult(
+  result: EvaluationRunResult,
+  out: OutputSink,
+  rewroteExistingArtifact: boolean,
+): ProgramExitCode {
   out.line(`run: ${result.runId}`);
   out.line(`  mode: ${result.mode}`);
   out.line(`  environment: ${result.target.environmentId}`);
   out.line(`  setup: ${result.setup.status}`);
   out.line(`  identities run: ${result.resolvedCohort.members.length}`);
   out.line(`  artifact: ${result.artifactDir}`);
+
+  if (rewroteExistingArtifact) {
+    // A run id is derived from the plan, and the plan from the trigger,
+    // so re-running one trigger by hand reuses the id and #60 updates
+    // that run's record rather than growing a new one. That is the
+    // intended semantics — but it means the artifact directory is
+    // rewritten rather than added to, which a user would otherwise have
+    // to infer from noticing the run id looks familiar.
+    out.line(
+      '  note: an artifact directory for this run id already existed and was rewritten. ' +
+        'That is the re-run semantics of a plan, not a second run.',
+    );
+  }
 
   if (result.setupFailures.length > 0) {
     // Kept visibly separate from findings. A setup failure is a
