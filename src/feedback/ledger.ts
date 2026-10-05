@@ -79,7 +79,7 @@ import {
 import type { Disposition, DispositionKind, DispositionState } from '../review/index.js';
 import type { FindingId } from '../review/index.js';
 import { FeedbackContractError, asFeedbackContractError } from './errors.js';
-import { rejectDuplicates, requireArray, requireRecord } from './validation.js';
+import { requireArray, requireRecord } from './validation.js';
 
 /**
  * One recorded disposition and the state it moved the finding from.
@@ -282,8 +282,9 @@ export function dispositionHistory(
 
 /** Distinct finding ids with at least one event, in id order. */
 export function dispositionedFindingIds(ledger: DispositionLedger): ReadonlyArray<FindingId> {
+  // `new Set` is what guarantees distinctness; a duplicate check on its
+  // spread result could never fire, so there is none to write.
   const ids = [...new Set(ledger.events.map((e) => e.findingId))];
-  rejectDuplicates(ids, 'ledger.findingIds');
   return Object.freeze(ids.sort(compareHandles));
 }
 
@@ -360,9 +361,18 @@ function assertKindCountKeyOrder(counts: Record<DispositionKind, number>): void 
   }
 }
 
-/** Total order on handle strings, used for every sorted output. */
+/**
+ * Total order on handle strings, used for every sorted output.
+ *
+ * Written out rather than as a nested ternary, and deliberately not
+ * `localeCompare`: this is the order a report's rows and a snapshot's
+ * key order are derived from, so it must be the same on every machine
+ * regardless of the ambient locale.
+ */
 export function compareHandles(a: string, b: string): number {
-  return a < b ? -1 : a > b ? 1 : 0;
+  if (a < b) return -1;
+  if (a > b) return 1;
+  return 0;
 }
 
 function headEventFor(
