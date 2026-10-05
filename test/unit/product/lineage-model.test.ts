@@ -17,6 +17,7 @@ import {
   parseProductModel,
   parseReviewProgram,
   parseRunLineage,
+  programKey,
   parseSyntheticCohort,
   parseSyntheticIdentity,
   ProductDomainError,
@@ -155,9 +156,98 @@ describe('lineage joins for a release transition', () => {
       identityIds: ['idn-alice'],
       startedAt: '2026-10-08T00:00:00Z',
     });
+    // Different deployments, so not the same target...
     expect(sameTarget(before, otherEnv)).toBe(false);
-    expect(isReleaseTransitionComparison(before, otherEnv)).toBe(false);
+    // ...but still the same program scope, so still comparable.
+    expect(programKey(before)).toBe(programKey(otherEnv));
     expect(isReleaseTransitionComparison(before, before)).toBe(false);
+  });
+
+  // Regression: the predicate required an equal environmentId, so it
+  // rejected the very case ADR-0011 names — a persistent cohort
+  // experiencing version A and then version B in two different
+  // environments. #64 and #67 both build on this predicate.
+  it('recognises a release transition across two environments of one product', () => {
+    const versionA = parseRunLineage({
+      runId: 'run-v1',
+      productId: 'prd-task-tracker',
+      environmentId: 'env-staging',
+      cohortId: 'coh-beta',
+      programId: 'rp-continuous',
+      identityIds: ['idn-alice', 'idn-bob'],
+      startedAt: '2026-10-01T00:00:00Z',
+    });
+    const versionB = parseRunLineage({
+      runId: 'run-v2',
+      productId: 'prd-task-tracker',
+      environmentId: 'env-pre-release',
+      cohortId: 'coh-beta',
+      programId: 'rp-continuous',
+      identityIds: ['idn-alice', 'idn-bob'],
+      startedAt: '2026-10-08T00:00:00Z',
+    });
+
+    expect(sameTarget(versionA, versionB)).toBe(false);
+    expect(isReleaseTransitionComparison(versionA, versionB)).toBe(true);
+    // Symmetric.
+    expect(isReleaseTransitionComparison(versionB, versionA)).toBe(true);
+  });
+
+  it('still recognises a release transition within one environment over time', () => {
+    // A `versioned` deployment serves different versions from one URL, so
+    // the environment need not change between the two observations.
+    const v1 = parseRunLineage({
+      runId: 'run-v1',
+      productId: 'prd-task-tracker',
+      environmentId: 'env-staging',
+      cohortId: 'coh-beta',
+      programId: 'rp-continuous',
+      identityIds: ['idn-alice'],
+      startedAt: '2026-10-01T00:00:00Z',
+    });
+    const v2 = parseRunLineage({
+      runId: 'run-v2',
+      productId: 'prd-task-tracker',
+      environmentId: 'env-staging',
+      cohortId: 'coh-beta',
+      programId: 'rp-continuous',
+      identityIds: ['idn-alice'],
+      startedAt: '2026-10-08T00:00:00Z',
+    });
+    expect(isReleaseTransitionComparison(v1, v2)).toBe(true);
+  });
+
+  it('does not join runs from a different program or cohort', () => {
+    const otherProgram = parseRunLineage({
+      runId: 'run-x',
+      productId: 'prd-task-tracker',
+      environmentId: 'env-staging',
+      cohortId: 'coh-beta',
+      programId: 'rp-other',
+      identityIds: ['idn-alice'],
+      startedAt: '2026-10-08T00:00:00Z',
+    });
+    const otherCohort = parseRunLineage({
+      runId: 'run-y',
+      productId: 'prd-task-tracker',
+      environmentId: 'env-staging',
+      cohortId: 'coh-other',
+      programId: 'rp-continuous',
+      identityIds: ['idn-alice'],
+      startedAt: '2026-10-08T00:00:00Z',
+    });
+    const otherProduct = parseRunLineage({
+      runId: 'run-z',
+      productId: 'prd-other',
+      environmentId: 'env-staging',
+      cohortId: 'coh-beta',
+      programId: 'rp-continuous',
+      identityIds: ['idn-alice'],
+      startedAt: '2026-10-08T00:00:00Z',
+    });
+    expect(isReleaseTransitionComparison(before, otherProgram)).toBe(false);
+    expect(isReleaseTransitionComparison(before, otherCohort)).toBe(false);
+    expect(isReleaseTransitionComparison(before, otherProduct)).toBe(false);
   });
 });
 

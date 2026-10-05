@@ -119,6 +119,7 @@ export {
   parseEvaluationTargetRef,
   parseEvidenceId,
   parseRunLineage,
+  programKey,
   sameTarget,
   targetKey,
   type EvaluationRunId,

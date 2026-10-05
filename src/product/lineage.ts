@@ -177,11 +177,11 @@ export function parseRunLineage(input: unknown, field = 'lineage'): RunLineage {
 
 /**
  * Key for joining two runs that observed the same durable target.
- *
- * Environment is included because ADR-0011's release-transition mode
- * compares runs across two *different* environments of one product; two
- * runs are only comparable when the environment is part of the key being
- * compared on, not silently dropped.
+ * Environment is included: it identifies *which* deployment was
+ * observed, so two runs are the same target only when they looked at the
+ * same deployment. For comparing a transition *between* deployments, use
+ * `programKey` — the environment is the thing that changes, not the thing
+ * that must match.
  */
 export function targetKey(target: EvaluationTargetRef): string {
   return [target.productId, target.environmentId, target.cohortId, target.programId].join('|');
@@ -193,15 +193,40 @@ export function sameTarget(a: EvaluationTargetRef, b: EvaluationTargetRef): bool
 }
 
 /**
- * Whether two lineages can be joined for a release-transition
- * comparison: same target, and at least one shared identity.
+ * Key for the durable scope a Review Program evaluates, excluding the
+ * environment.
+ *
+ * This is the axis a release transition varies *along*: the same program
+ * and the same cohort observed against a different deployment.
+ */
+export function programKey(target: EvaluationTargetRef): string {
+  return [target.productId, target.cohortId, target.programId].join('|');
+}
+
+/**
+ * Whether two lineages form a release-transition comparison: the same
+ * program scope, at least one shared identity, and two distinct runs.
  *
  * This is the predicate #67's acceptance scenario and the KPI layer
- * (#64) both need. A comparison with no shared identity is not a
- * returning-user observation and must not be reported as one.
+ * (#64) both need. Two conditions are load-bearing:
+ *
+ * - **The environment is deliberately excluded.** ADR-0011's
+ *   release-transition mode is a persistent cohort experiencing an
+ *   earlier version and then a newer one, and those two versions are
+ *   usually two *different* environments of the same product. Requiring
+ *   an equal `environmentId` here would reject the exact case the
+ *   predicate exists to recognise. The environment still distinguishes
+ *   the two observations; it is recorded on each lineage.
+ * - **A shared identity is required.** Two runs of the same program with
+ *   disjoint members are not a returning-user observation, and must not
+ *   be reported as one.
+ *
+ * A comparison across two *different* programs or cohorts is not a
+ * transition: `programKey` guards that.
  */
 export function isReleaseTransitionComparison(a: RunLineage, b: RunLineage): boolean {
-  if (!sameTarget(a, b) || a.runId === b.runId) return false;
+  if (a.runId === b.runId) return false;
+  if (programKey(a) !== programKey(b)) return false;
   const bIdentities = new Set<string>(b.identityIds);
   return a.identityIds.some((id) => bIdentities.has(id));
 }
