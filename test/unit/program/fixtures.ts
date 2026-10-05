@@ -21,6 +21,7 @@ import {
   type ProgramBudget,
   type ProductModel,
   type ReviewProgram,
+  type SyntheticCohort,
 } from '../../../src/product/index.js';
 import {
   environmentVersion,
@@ -142,6 +143,8 @@ function baseCohorts() {
 
 export interface ModelOptions {
   readonly programs: ReadonlyArray<ReviewProgram>;
+  /** Additional cohorts, for a test that needs a membership shape the base set lacks. */
+  readonly extraCohorts?: ReadonlyArray<SyntheticCohort>;
 }
 
 /** Assemble a model with the shared product/environments/identities/cohorts. */
@@ -150,7 +153,7 @@ export function makeModel(options: ModelOptions): ProductModel {
     product: baseProduct(),
     environments: baseEnvironments(),
     identities: baseIdentities(),
-    cohorts: baseCohorts(),
+    cohorts: [...baseCohorts(), ...(options.extraCohorts ?? [])],
     programs: options.programs,
   });
 }
