@@ -1,0 +1,162 @@
+/**
+ * Product — the customer-owned product being evaluated (ADR-0011).
+ *
+ * A Product is the root of the durable model. Environments, Synthetic
+ * Identities, Cohorts and Review Programs are all scoped to exactly one
+ * Product, and every reference between them is by durable id rather than
+ * by position or by runtime handle.
+ */
+
+import { ProductDomainError } from './errors.js';
+import { ProductId, parseProductId } from './ids.js';
+import {
+  optionalString,
+  optionalStringArray,
+  requireNonEmptyString,
+  requireRecord,
+  rejectDuplicates,
+  rejectUnknownKeys,
+} from './validation.js';
+
+const PRODUCT_FIELDS = ['id', 'slug', 'displayName', 'description', 'owners', 'labels'] as const;
+
+export interface Product {
+  readonly id: ProductId;
+  /** Lowercase, url-safe handle used in CLI output and artifact paths. */
+  readonly slug: string;
+  /** Human-facing name. */
+  readonly displayName: string;
+  readonly description?: string;
+  /**
+   * Free-form owner handles. Never an email address with credentials or
+   * any other secret-bearing value — ADR-0011 keeps secret *values* out
+   * of the repository-controlled configuration and stores references
+   * only.
+   */
+  readonly owners?: ReadonlyArray<string>;
+  /** Free-form classification tags. Not an enumeration. */
+  readonly labels?: ReadonlyArray<string>;
+}
+
+const SLUG_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
+const MAX_SLUG_LENGTH = 48;
+const MAX_TAGS = 32;
+
+export function parseProduct(input: unknown, field = 'product'): Product {
+  const raw = requireRecord(input, field);
+  rejectUnknownKeys(raw, PRODUCT_FIELDS, field);
+
+  const id = parseProductId(raw['id'], `${field}.id`);
+  const slug = requireNonEmptyString(raw['slug'], `${field}.slug`, MAX_SLUG_LENGTH);
+  const displayName = requireNonEmptyString(raw['displayName'], `${field}.displayName`);
+  const description = optionalString(raw['description'], `${field}.description`, 2_000);
+  const owners = optionalStringArray(raw['owners'], `${field}.owners`, (v, f) =>
+    requireNonEmptyString(v, f, 200),
+  );
+  const labels = optionalStringArray(raw['labels'], `${field}.labels`, (v, f) =>
+    requireNonEmptyString(v, f, 64),
+  );
+
+  return makeProduct({ id, slug, displayName, ...optionalBag({ description, owners, labels }) });
+}
+
+/**
+ * Validate typed parts and freeze the result.
+ *
+ * The single place a `Product` is constructed. `parseProduct` (untrusted
+ * input) and `buildProduct` (declared input) both funnel through here, so
+ * a Product cannot be assembled with weaker constraints by either route.
+ */
+function makeProduct(parts: {
+  readonly id: ProductId;
+  readonly slug: string;
+  readonly displayName: string;
+  readonly description?: string;
+  readonly owners?: ReadonlyArray<string>;
+  readonly labels?: ReadonlyArray<string>;
+}): Product {
+  if (!SLUG_PATTERN.test(parts.slug)) {
+    throw new ProductDomainError(
+      'product.slug must be lowercase and hyphen-separated (e.g. "task-tracker")',
+      'product.slug',
+      { received: parts.slug },
+    );
+  }
+  if (parts.labels !== undefined) {
+    if (parts.labels.length > MAX_TAGS) {
+      throw new ProductDomainError(
+        `product.labels must have at most ${MAX_TAGS} entries`,
+        'product.labels',
+        { length: parts.labels.length, maxLength: MAX_TAGS },
+      );
+    }
+    rejectDuplicates(parts.labels, 'product.labels');
+  }
+  if (parts.owners !== undefined) {
+    rejectDuplicates(parts.owners, 'product.owners');
+  }
+
+  const result: { -readonly [K in keyof Product]: Product[K] } = {
+    id: parts.id,
+    slug: parts.slug,
+    displayName: requireNonEmptyString(parts.displayName, 'product.displayName'),
+  };
+  if (parts.description !== undefined) {
+    result.description = parts.description;
+  }
+  if (parts.owners !== undefined) {
+    result.owners = Object.freeze([...parts.owners]);
+  }
+  if (parts.labels !== undefined) {
+    result.labels = Object.freeze([...parts.labels]);
+  }
+  return Object.freeze(result);
+}
+
+/**
+ * Drop `undefined` entries so an absent optional is absent rather than
+ * explicitly undefined — `exactOptionalPropertyTypes` distinguishes the
+ * two, and the distinction is what lets `JSON.stringify` round-trip a
+ * domain value without inventing keys.
+ */
+function optionalBag<T extends object>(values: {
+  readonly [K in keyof T]: T[K] | undefined;
+}): Partial<T> {
+  const out: { [K in keyof T]?: T[K] } = {};
+  for (const key of Object.keys(values) as (keyof T)[]) {
+    const v = values[key];
+    if (v !== undefined) out[key] = v as T[keyof T];
+  }
+  return out;
+}
+
+/**
+ * Assemble a `Product` from declared identity plus optional metadata.
+ *
+ * Identity is passed in, never derived: a caller cannot obtain a Product
+ * whose id differs from the one it intends to persist.
+ */
+export function buildProduct(
+  core: { readonly id: ProductId; readonly slug: string; readonly displayName: string },
+  optional: {
+    readonly description?: string;
+    readonly owners?: ReadonlyArray<string>;
+    readonly labels?: ReadonlyArray<string>;
+  } = {},
+): Product {
+  return makeProduct({ ...core, ...optionalBag(optional) });
+}
+
+/** Type guard for an already-shaped value crossing a module boundary. */
+export function isProduct(value: unknown): value is Product {
+  try {
+    parseProduct(value);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export function productSummaryLine(product: Product): string {
+  return `${product.id} (${product.displayName})`;
+}
