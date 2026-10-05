@@ -97,7 +97,7 @@ export interface SaveOptions {
 }
 
 /* -------------------------------------------------------------------------- */
-/* Why `expectedRevision` is optional — read this before adding a mutator      */
+/* Why `expectedRevision` is optional — read this before adding a mutator     */
 /* -------------------------------------------------------------------------- */
 
 /**
@@ -527,6 +527,20 @@ export class CohortStateService {
    * What the guard *can* close at this layer, and does, is the
    * absent-record case: an expected revision above 0 with no record
    * present is a conflict, not an excuse to create one.
+   *
+   * One honest note on the `expectedRevision: 0` branch below. It is the
+   * documented encoding for "the record must not exist yet", and it is
+   * what makes the *other* direction guardable — a caller that saw no
+   * record and then finds one has lost the create-race, and is refused.
+   * That direction is tested. This direction, `0` against a genuinely
+   * absent record, is **not currently reachable through the public
+   * surface**, because every mutator loads its record first and
+   * `loadIdentity` / `loadCohort` raise `identity_not_found` /
+   * `cohort_not_found` before `put` is reached, and the two create paths
+   * pass no options. It is kept because it is the half of the encoding
+   * that makes the other half meaningful — a protocol that only defines
+   * the case it can reject is not a protocol — not because something
+   * calls it today.
    */
   private async put<T>(
     kind: DurableRecordKind,
