@@ -20,13 +20,20 @@
  * 2. **A comparative claim requires a joinable baseline.** If
  *    `change` is anything other than `unknown`, the module requires
  *    `isReleaseTransitionComparison(baseline, observed)` — #57's own
- *    predicate: same durable target, different run, at least one
- *    shared Synthetic Identity. This is the single most important rule
- *    in the file. Without it, "this is a regression introduced by
- *    version B" could be asserted for two runs with nothing in common
- *    but a cohort name, and ADR-0011's returning-user thesis would
- *    become unfalsifiable. #64's *longitudinal findings accepted* KPI
- *    is only meaningful because this rule exists.
+ *    predicate: same Review Program scope (`programKey`: Product,
+ *    Cohort, Program), two distinct runs, at least one shared Synthetic
+ *    Identity. This is the single most important rule in the file.
+ *    Without it, "this is a regression introduced by version B" could
+ *    be asserted for two runs with nothing in common but a cohort name,
+ *    and ADR-0011's returning-user thesis would become unfalsifiable.
+ *    #64's *longitudinal findings accepted* KPI is only meaningful
+ *    because this rule exists.
+ *
+ *    The environment is deliberately *not* part of that scope. A release
+ *    transition is a persistent cohort meeting an earlier and a newer
+ *    version, which are normally two different deployments — so
+ *    `env-staging` → `env-production` is the canonical case and must be
+ *    accepted, while a different program or cohort must be rejected.
  *
  * 3. **Point-in-time and longitudinal findings share one envelope.**
  *    Both are `LongitudinalChange` on the same `Finding`; there is no
@@ -44,8 +51,8 @@
 import {
   isReleaseTransitionComparison,
   parseRunLineage,
+  programKey,
   sameTarget,
-  targetKey,
 } from '../product/lineage.js';
 import type { EvaluationTargetRef, RunLineage } from '../product/lineage.js';
 import { asReviewContractError, ReviewContractError } from './errors.js';
@@ -170,16 +177,36 @@ export function parseLongitudinalChange(
     }
   }
 
-  // A baseline is by definition the earlier observation, so a later one
-  // is wrong whether or not a comparative claim was made. Checked
-  // whenever a baseline exists rather than only under a claim, because
-  // a reference to the wrong run is a defect in the reference itself.
-  if (baseline !== null && Date.parse(baseline.startedAt) > Date.parse(observed.startedAt)) {
-    throw new ReviewContractError(
-      `${field}.baseline.startedAt must not be after observed.startedAt`,
-      `${field}.baseline.startedAt`,
-      { baseline: baseline.startedAt, observed: observed.startedAt },
-    );
+  // A baseline is by definition an earlier observation of the same
+  // program scope, so both of these are wrong whether or not a
+  // comparative claim was made. Checked whenever a baseline exists
+  // rather than only under a claim, because a reference to the wrong
+  // run is a defect in the reference itself.
+  //
+  // The environment is deliberately *not* part of the scope check.
+  // ADR-0011's release-transition mode is a persistent cohort
+  // experiencing an earlier version and then a newer one, and those are
+  // normally two different deployments of one product — so a baseline
+  // on a different environment is the canonical case, not an error.
+  // `isReleaseTransitionComparison` guards the same thing for claims;
+  // this guard covers a baseline recorded without a claim.
+  if (baseline !== null) {
+    if (programKey(baseline) !== programKey(observed)) {
+      throw new ReviewContractError(
+        `${field}.baseline must belong to the same Review Program scope (Product, Cohort, ` +
+          `Program) as the observed run; the environment may differ, since that is what a ` +
+          `release transition varies along`,
+        `${field}.baseline`,
+        { baselineProgramKey: programKey(baseline), observedProgramKey: programKey(observed) },
+      );
+    }
+    if (Date.parse(baseline.startedAt) > Date.parse(observed.startedAt)) {
+      throw new ReviewContractError(
+        `${field}.baseline.startedAt must not be after observed.startedAt`,
+        `${field}.baseline.startedAt`,
+        { baseline: baseline.startedAt, observed: observed.startedAt },
+      );
+    }
   }
 
   let relatedFindingIds: ReadonlyArray<FindingId> | undefined;
@@ -208,12 +235,25 @@ export function parseLongitudinalChange(
 
 /**
  * Assert that a finding's declared target matches the target of the
- * run it says it observed.
+ * run it says it observed, and that any baseline belongs to the same
+ * Review Program scope.
  *
  * Called from `parseFinding`. A finding whose `target` names a
  * different environment or cohort than its own observed run would make
  * #64's per-product and per-cohort aggregates wrong in a way no later
  * check could detect, so the cross-field mismatch is rejected here.
+ *
+ * The two checks are deliberately different in strictness:
+ *
+ * - `observed` must match the target exactly, environment included. The
+ *   finding is a claim about *this* deployment, so the run that
+ *   produced it must have been against *this* deployment.
+ * - `baseline` must match only the Program scope (`programKey`: Product,
+ *   Cohort, Program). The environment is excluded because it is the
+ *   axis a release transition varies along — a baseline on
+ *   `env-staging` and an observation on `env-production` is the
+ *   canonical returning-user comparison, and requiring them to match
+ *   would reject exactly the case ADR-0011 describes.
  */
 export function assertObservedTarget(
   longitudinal: LongitudinalChange,
@@ -237,11 +277,12 @@ export function assertObservedTarget(
       },
     );
   }
-  if (longitudinal.baseline !== null && !sameTarget(longitudinal.baseline, target)) {
+  if (longitudinal.baseline !== null && programKey(longitudinal.baseline) !== programKey(target)) {
     throw new ReviewContractError(
-      `${baselineField} must share the finding's target`,
+      `${baselineField} must share the finding's Review Program scope (Product, Cohort, Program); ` +
+        `the environment may differ, since that is the axis a release transition varies along`,
       baselineField,
-      { findingTarget: targetKey(target) },
+      { findingProgramKey: programKey(target), baselineProgramKey: programKey(longitudinal.baseline) },
     );
   }
 }

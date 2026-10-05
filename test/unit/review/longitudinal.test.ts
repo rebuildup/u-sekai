@@ -10,7 +10,12 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { isReleaseTransitionComparison } from '../../../src/product/index.js';
+import {
+  isReleaseTransitionComparison,
+  parseCohortId,
+  parseEnvironmentId,
+  parseReviewProgramId,
+} from '../../../src/product/index.js';
 import {
   CHANGE_KINDS,
   EVALUATION_MODES,
@@ -26,14 +31,17 @@ import {
   lineageA,
   lineageB,
   lineageUnrelated,
-  otherTarget,
+  target,
   verification,
 } from './support/fixtures.js';
 
 const COMPARATIVE_CHANGES = CHANGE_KINDS.filter((k) => k !== 'unknown');
 
 /** A finding observed on `lineageB` with a given longitudinal block. */
-function findingOn(longitudinal: Record<string, unknown>): Record<string, unknown> {
+function findingOn(
+  longitudinal: Record<string, unknown>,
+  overrides: Record<string, unknown> = {},
+): Record<string, unknown> {
   return findingInput({
     observedIn: lineageB.runId,
     identityIds: ['idn-alice'],
@@ -41,6 +49,7 @@ function findingOn(longitudinal: Record<string, unknown>): Record<string, unknow
     observedAt: '2026-10-07T00:07:00Z',
     verification: { ...verification, findingId: 'fnd-0000abcd' },
     longitudinal,
+    ...overrides,
   });
 }
 
@@ -123,16 +132,72 @@ describe('a comparative claim requires a joinable baseline', () => {
     });
   }
 
-  it('rejects a baseline on a different environment', () => {
-    const elsewhere = { ...lineageA, environmentId: otherTarget.environmentId };
+  it('accepts a baseline on a different environment — that is what a transition is', () => {
+    // ADR-0011's release-transition mode is a persistent cohort meeting
+    // an earlier and a newer version, which are normally two different
+    // deployments. #57's isReleaseTransitionComparison deliberately
+    // excludes the environment from the comparison scope.
+    const staging = { ...lineageA };
+    const production = {
+      ...lineageB,
+      environmentId: parseEnvironmentId('env-production'),
+    };
+    const l = parseLongitudinalChange({
+      mode: 'releaseTransition',
+      change: 'regressed',
+      baseline: staging,
+      observed: production,
+    });
+    expect(l.change).toBe('regressed');
+    expect(l.baseline?.environmentId).toBe('env-staging');
+    expect(l.observed.environmentId).toBe('env-production');
+  });
+
+  it('rejects a baseline from a different cohort or program', () => {
+    // The scope guard that the environment relaxation makes load-bearing.
+    const otherCohort = {
+      ...lineageA,
+      runId: 'run-2026-10-01-0003',
+      cohortId: parseCohortId('coh-edge'),
+    };
+    expect(() =>
+      parseLongitudinalChange({
+        mode: 'releaseTransition',
+        change: 'regressed',
+        baseline: otherCohort,
+        observed: lineageB,
+      }),
+    ).toThrow(/requires a joinable baseline/);
+
+    const otherProgram = {
+      ...lineageA,
+      runId: 'run-2026-10-01-0004',
+      programId: parseReviewProgramId('rp-weekly'),
+    };
     expect(() =>
       parseLongitudinalChange({
         mode: 'continuous',
         change: 'persisted',
-        baseline: elsewhere,
+        baseline: otherProgram,
         observed: lineageB,
       }),
     ).toThrow(/requires a joinable baseline/);
+  });
+
+  it('rejects a baseline outside the program scope even when no claim is made', () => {
+    const otherCohort = {
+      ...lineageA,
+      runId: 'run-2026-10-01-0005',
+      cohortId: parseCohortId('coh-edge'),
+    };
+    expect(() =>
+      parseLongitudinalChange({
+        mode: 'continuous',
+        change: 'unknown',
+        baseline: otherCohort,
+        observed: lineageB,
+      }),
+    ).toThrow(/must belong to the same Review Program scope/);
   });
 
   it('rejects a baseline that starts after the observation', () => {
@@ -235,17 +300,57 @@ describe('longitudinal references are validated as part of the finding', () => {
     ).toThrow(/requires a joinable baseline/);
   });
 
-  it('rejects a finding whose baseline is on a different environment', () => {
+  it('rejects a finding whose baseline is in a different program scope', () => {
     expect(() =>
       parseFinding(
         findingOn({
           mode: 'releaseTransition',
           change: 'persisted',
-          baseline: { ...lineageA, environmentId: otherTarget.environmentId },
+          baseline: { ...lineageA, cohortId: parseCohortId('coh-edge') },
           observed: lineageB,
         }),
       ),
     ).toThrow(/requires a joinable baseline/);
+  });
+
+  it('accepts a release-transition finding across two environments', () => {
+    // The end-to-end shape ADR-0011 describes: the same persistent
+    // identity and the same program scope, observed against a newer
+    // deployment. The finding's own target is the deployment it was
+    // raised on (production); the baseline is the earlier one.
+    const production = parseEnvironmentId('env-production');
+    const f = parseFinding(
+      findingOn(
+        {
+          mode: 'releaseTransition',
+          change: 'regressed',
+          baseline: { ...lineageA },
+          observed: { ...lineageB, environmentId: production },
+        },
+        { target: { ...target, environmentId: production } },
+      ),
+    );
+    expect(f.longitudinal.change).toBe('regressed');
+    expect(f.target.environmentId).toBe('env-production');
+    expect(f.longitudinal.baseline?.environmentId).toBe('env-staging');
+  });
+
+  it('still refuses a finding whose own target is not the one it observed', () => {
+    // The relaxation applies to the *baseline*, never to the run that
+    // raised the finding: a claim about staging must come from a run
+    // that actually looked at staging.
+    expect(() =>
+      parseFinding(
+        findingOn({
+          mode: 'releaseTransition',
+          change: 'regressed',
+          baseline: { ...lineageA },
+          observed: { ...lineageB, environmentId: parseEnvironmentId('env-production') },
+        }),
+      ),
+    ).toThrow(
+      /may not be attributed to a Product\/Environment\/Cohort\/Program its run did not evaluate/,
+    );
   });
 
   it('rejects an unknown longitudinal field', () => {

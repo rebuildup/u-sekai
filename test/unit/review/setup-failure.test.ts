@@ -26,11 +26,12 @@ import {
   SETUP_FAILURE_CAUSES,
   setupFailureId,
   setupFailureFromRuntimeError,
+  type ReviewOutcome,
   type RuntimeErrorRecord,
   type SetupFailure,
 } from '../../../src/review/index.js';
 import { parseSyntheticIdentityId } from '../../../src/product/index.js';
-import { findingInput, lineageA, target } from './support/fixtures.js';
+import { findingInput, lineageA, target, verification } from './support/fixtures.js';
 import { browserGone, setupInput } from './support/setup-fixture.js';
 
 const SF_A = setupFailureId('sf-0000abcd');
@@ -259,5 +260,61 @@ describe('a setup failure must cite evidence that supports it', () => {
         }),
       ),
     ).toThrow(/at least one reference with stance "supports"/);
+  });
+});
+
+describe('"nothing ran" is not "nothing was found"', () => {
+  /**
+   * The empty set is ambiguous on its own: zero findings means either
+   * "the evaluation completed and surfaced nothing" or "the evaluation
+   * never got far enough to look". Those are opposite conclusions and
+   * both are common, so the contract has to make them distinguishable
+   * at the value level rather than leaving it to whoever reads the
+   * number.
+   */
+  it('makes a run that found nothing differ from a run that never executed', () => {
+    const cleanRun: ReviewOutcome[] = [];
+    const failedRun: ReviewOutcome[] = [
+      setupFailureFromRuntimeError(browserGone, { id: SF_A, index: 0, runId: lineageA.runId }),
+    ];
+
+    // Same finding count, and the finding count is not enough to tell
+    // them apart — which is exactly why the setup failure has to be
+    // carried out of band.
+    expect(cleanRun.filter(isFinding)).toHaveLength(0);
+    expect(failedRun.filter(isFinding)).toHaveLength(0);
+    expect(cleanRun.filter(isSetupFailure)).toHaveLength(0);
+    expect(failedRun.filter(isSetupFailure)).toHaveLength(1);
+  });
+
+  it('keeps a setup failure out of a finding-only aggregation entirely', () => {
+    const failure = setupFailureFromRuntimeError(browserGone, { id: SF_A });
+    // The array a KPI aggregates over. A setup failure cannot be pushed
+    // into it — the type system refuses, which
+    // type-separation.test.ts pins with @ts-expect-error.
+    const findingsForKpi = [failure].filter(isFinding);
+    expect(findingsForKpi).toHaveLength(0);
+  });
+
+  it('represents a verification that did not run as its own outcome, not as a pass', () => {
+    // `blockedBySetup` is the coherent home for a notRun verification:
+    // a pass was scheduled and a setup failure stopped it. Recording
+    // that as `notAttempted` would lose the fact that something was
+    // supposed to happen, and recording it as `confirmed` would invent
+    // a result nobody obtained.
+    const f = parseFinding(
+      findingInput({
+        reproduction: { status: 'blockedBySetup', notes: 'Chromium could not launch.' },
+        verification: { ...verification, outcome: 'notRun' },
+      }),
+    );
+    expect(f.verification?.outcome).toBe('notRun');
+    expect(f.reproduction.status).toBe('blockedBySetup');
+  });
+
+  it('refuses to call a not-run verification a reproduction', () => {
+    expect(() =>
+      parseFinding(findingInput({ verification: { ...verification, outcome: 'notRun' } })),
+    ).toThrow(/cannot be "reproduced" while its own verification reports "notRun"/);
   });
 });
