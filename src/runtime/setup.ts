@@ -65,7 +65,7 @@ import type {
   SyntheticIdentityId,
 } from '../product/index.js';
 import { RuntimeIntegrationError } from './errors.js';
-import { deriveRequestId } from './lineage.js';
+import { deriveRequestId, runToken } from './lineage.js';
 import type { EvaluationPlan } from '../program/index.js';
 
 /**
@@ -266,10 +266,17 @@ export function setupFailureFromOperator(
     readonly target: EvaluationTargetRef;
     readonly identityIds: ReadonlyArray<SyntheticIdentityId>;
     readonly ordinal: number;
+    /** Short discriminator, so setup and cleanup failures never collide. */
+    readonly kind?: 'op' | 'cleanup';
   },
 ): SetupFailure {
   const projection = projectOperatorFailure(failure);
-  const id: SetupFailureId = setupFailureId(`sf-${input.runId}-op-${input.ordinal}`);
+  // Bounded and validated, not spelled from the run id: see `runToken`.
+  // `setupFailureId` is the authority, so an id #61 would refuse is
+  // caught here rather than reaching a consumer as a cast.
+  const id: SetupFailureId = setupFailureId(
+    `sf-${runToken(input.runId)}-${input.kind ?? 'op'}-${input.ordinal}`,
+  );
 
   if (projection.channel === 'runtimeError') {
     return setupFailureFromRuntimeError(

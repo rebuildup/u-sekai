@@ -62,10 +62,11 @@ import { VERSION } from '../version.js';
 import type { BrowserAdapter } from '../adapter/browser/interface.js';
 import type { Reasoner } from '../domain/reasoner.js';
 import type { ParticipantAction, CapabilityProfile } from '../domain/capability.js';
-import type { ObserverReport, ObserverFinding } from '../domain/observer.js';
+import type { ObserverReport } from '../domain/observer.js';
 import type { ReasonerConfig } from '../domain/experiment.js';
 import type { RunEvent, StoredObservation } from '../domain/evidence.js';
 import type { RunResult } from '../domain/result.js';
+import { EMPTY_SELF_REPORT } from '../domain/self-report.js';
 import type { EvaluationPlan } from '../program/index.js';
 import {
   isReleaseTransitionComparison,
@@ -76,12 +77,14 @@ import {
   type RunLineage,
   type SyntheticIdentity,
 } from '../product/index.js';
-import type {
-  EvaluationMode,
-  EvidenceRef,
-  Finding,
-  ReviewOutcome,
-  SetupFailure,
+import {
+  isFinding,
+  isSetupFailure,
+  type EvaluationMode,
+  type EvidenceRef,
+  type Finding,
+  type ReviewOutcome,
+  type SetupFailure,
 } from '../review/index.js';
 import type {
   OperatorAuditRecord,
@@ -100,11 +103,7 @@ import {
 } from './setup.js';
 import { buildRunLineage, resolveRunId } from './lineage.js';
 import { EvidenceCatalogue, rollUpBehavioralEvidence, type IdentityRunRecord } from './evidence.js';
-import {
-  materializeFindings,
-  materializeRuntimeSetupFailures,
-  type MaterializeInput,
-} from './findings.js';
+import { materializeOutcomes, type MaterializeInput } from './findings.js';
 import {
   assertTransitionEligible,
   openReleaseWindows,
@@ -207,6 +206,11 @@ export async function runEvaluation(
   const now: RuntimeClock = config.now ?? (() => new Date().toISOString());
 
   const target = assertPlanInModel(config, plan);
+  // Resolved here, before the World Operator is constructed: an
+  // environment that declares no endpoint is a model defect, and finding
+  // it out *after* provisioning would leave world state applied for a run
+  // that was always going to fail.
+  const targetUrl = resolveTargetUrl(config, target.environmentId);
   const runId = resolveRunId(plan, options.runId);
   const version = resolveObservedVersion(plan, options.observedVersion);
   const { mode, baseline } = resolveLongitudinal(plan, options);
@@ -292,7 +296,7 @@ export async function runEvaluation(
     ? emptyExecution()
     : await executeIdentities(config, {
         runId,
-        targetUrl: resolveTargetUrl(config, target.environmentId),
+        targetUrl,
         members: resolved.members,
         startedAt,
         now,
@@ -381,13 +385,11 @@ export async function runEvaluation(
       : {}),
   };
 
-  const findings = materializeFindings(materialiseInput);
-  const runFailures = materializeRuntimeSetupFailures(materialiseInput);
-  const outcomes: ReadonlyArray<ReviewOutcome> = Object.freeze([
-    ...findings,
-    ...setupFailures,
-    ...runFailures,
-  ]);
+  // One materialiser, not three call sites. The operator's own failures
+  // join the same set of review records later, once cleanup has run:
+  // they were classified before execution began, but a cleanup failure
+  // can only be known afterwards.
+  const runOutcomes = materializeOutcomes(materialiseInput);
 
   const persistence =
     setupRefused || options.persist === false
@@ -443,6 +445,31 @@ export async function runEvaluation(
   ) {
     cleanup = await runCleanupPhase(operator, { plan, target, runId });
   }
+  // A cleanup that was denied, or that could not release everything,
+  // means world state this run created is still live. That is the one
+  // condition in #59's taxonomy that can leave something behind, so it
+  // is reported as a `SetupFailure` of its own rather than left for the
+  // caller to notice in `result.cleanup` — and it is never collapsed
+  // into the failure that caused it.
+  const cleanupFailures: ReadonlyArray<SetupFailure> =
+    cleanup === undefined || !('failure' in cleanup)
+      ? Object.freeze([])
+      : Object.freeze([
+          setupFailureFromOperator(cleanup.failure, {
+            runId,
+            target,
+            identityIds: memberIds,
+            ordinal: 1,
+            kind: 'cleanup',
+          }),
+        ]);
+  const findings = runOutcomes.filter(isFinding);
+  const runFailures = runOutcomes.filter(isSetupFailure);
+  const outcomes: ReadonlyArray<ReviewOutcome> = Object.freeze([
+    ...runOutcomes,
+    ...setupFailures,
+    ...cleanupFailures,
+  ]);
   // Read after cleanup so the audit a caller receives — and the audit
   // written into the artifact — covers the whole privileged lifecycle of
   // the run, not only its setup half. A `fixture.reset` that never made
@@ -481,7 +508,7 @@ export async function runEvaluation(
     mode,
     outcomes,
     findings,
-    setupFailures: Object.freeze([...setupFailures, ...runFailures]),
+    setupFailures: Object.freeze([...setupFailures, ...runFailures, ...cleanupFailures]),
     evidence: catalog.all,
     resolvedCohort: resolved,
     setup,
@@ -667,15 +694,28 @@ export function assertJoinableBaseline(baseline: RunLineage, observed: RunLineag
   );
 }
 
+/**
+ * The entry point to drive a browser at, or a refusal.
+ *
+ * Checked before the World Operator exists, so a model whose environment
+ * has no reachable entry point fails before any world state is applied.
+ *
+ * The test is falsy, not `undefined`: #57's parser already guarantees a
+ * non-empty absolute origin, so this is a second line against a model
+ * assembled by hand or across a serialisation boundary. A falsy check
+ * would let `baseUrl: ''` through — the exact shape a hand-built model
+ * most likely has — and the run would then fail one layer later, inside
+ * the adapter, with the connector already holding live resources.
+ */
 function resolveTargetUrl(config: RuntimeConfiguration, environmentId: EnvironmentId): string {
   const environment = config.model.environments.find((e) => e.id === environmentId);
   const baseUrl = environment?.endpoint.baseUrl;
-  if (baseUrl === undefined) {
+  if (typeof baseUrl !== 'string' || baseUrl.trim().length === 0) {
     throw new RuntimeIntegrationError(
       `environment ${environmentId} declares no endpoint, so there is nothing to drive a browser at`,
       'noEnvironmentEndpoint',
       'model.environments.endpoint',
-      { environmentId },
+      { environmentId, received: baseUrl === undefined ? 'absent' : typeof baseUrl },
     );
   }
   return baseUrl;
@@ -797,16 +837,14 @@ async function executeIdentities(
       // loop continues to the next identity.
       identities.push({
         identityId: identity.id,
+        // `EMPTY_SELF_REPORT` is the existing constant for "this
+        // participant never produced one", restated with the two fields
+        // that must be per-run. Restating the other nine would be a
+        // second place for a new self-report field to be forgotten.
         selfReport: {
+          ...EMPTY_SELF_REPORT,
           participantId: identity.id,
           capturedAt: input.now(),
-          goal: '',
-          productUnderstanding: '',
-          confusionPoints: [],
-          resultAlignedWithExpectation: false,
-          confidence: 0,
-          wouldReturn: false,
-          freeText: '',
         },
         terminationReason: 'error',
         observations,
@@ -1084,5 +1122,3 @@ function unavailableObserver(capturedAt: string, reason: string): ObserverReport
     },
   };
 }
-
-export type { ObserverFinding };

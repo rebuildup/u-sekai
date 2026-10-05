@@ -48,6 +48,7 @@
 import {
   deriveFindingId,
   parseFinding,
+  parseSetupFailureId,
   setupFailureFromRuntimeError,
   type AffectedCondition,
   type ChangeKind,
@@ -60,7 +61,6 @@ import {
   type ReviewOutcome,
   type RiskClass,
   type SetupFailure,
-  type SetupFailureId,
 } from '../review/index.js';
 import type {
   EvaluationRunId,
@@ -72,6 +72,7 @@ import type { ObserverFinding } from '../domain/observer.js';
 import type { EvidenceCatalogue } from './evidence.js';
 import { DEFAULT_OBSERVER_CLASSIFIER, type ObserverFindingClassifier } from './config.js';
 import { setupFailureCauseForRuntimeError } from './setup.js';
+import { runToken } from './lineage.js';
 
 /**
  * The `riskClass` each `kind` implies.
@@ -242,7 +243,9 @@ export function materializeRuntimeSetupFailures(
   return Object.freeze(
     input.catalog.runtimeErrors.map((record, index) =>
       setupFailureFromRuntimeError(record, {
-        id: `sf-${input.runId}-re-${index + 1}` as SetupFailureId,
+        // Parsed, not cast: #61 never re-validates the id it is handed,
+        // so a caller that produced an invalid one would never find out.
+        id: parseSetupFailureId(`sf-${runToken(input.runId)}-re-${index + 1}`),
         cause: setupFailureCauseForRuntimeError(record),
         target: input.target,
         runId: input.runId,
@@ -258,7 +261,7 @@ function buildEvidenceRefs(
   identityIds: ReadonlyArray<SyntheticIdentityId>,
   input: MaterializeInput,
 ): ReadonlyArray<EvidenceRef> {
-  const own = input.catalog.byObserverFinding.get(finding.id);
+  const own = input.catalog.evidenceForObserverFinding(finding.id);
   // Supporting trace evidence from the identities the finding is
   // attributed to. The observer's own report is cited too, but it is a
   // second opinion rather than the primary basis: the structured trace

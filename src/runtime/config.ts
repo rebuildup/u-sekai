@@ -41,12 +41,7 @@ import type { FindingKind, Severity } from '../review/index.js';
 import type { Reasoner } from '../domain/reasoner.js';
 import type { CapabilityProfile, ParticipantAction } from '../domain/capability.js';
 import type { CohortStateService } from '../cohort/index.js';
-import type {
-  EnvironmentId,
-  ProductId,
-  ProductModel,
-  SyntheticIdentity,
-} from '../product/index.js';
+import type { ProductModel, SyntheticIdentity } from '../product/index.js';
 import type { OperatorClock, OperatorStep, ProvisioningConnector } from '../operator/index.js';
 import type { ObserverFinding, ObserverFindingSeverity } from '../domain/observer.js';
 
@@ -179,6 +174,27 @@ export const OBSERVER_SEVERITY_MAP: Readonly<
 });
 
 /**
+ * The mapping from the observer's `category` vocabulary onto #61's
+ * `FindingKind`.
+ *
+ * Data, not inference. The runtime never guesses a kind the observer
+ * did not imply, and it never re-orders severity into it: the two axes
+ * are independent in #61 and collapsing them here is the anti-metric
+ * `docs/product/kpis.md` warns about.
+ */
+const OBSERVER_FINDING_KIND: Readonly<Record<ObserverFinding['category'], FindingKind>> =
+  Object.freeze({
+    dead_end: 'workflowBlocker',
+    friction: 'usabilityDefect',
+    confusion: 'comprehensionGap',
+    trust: 'trustDefect',
+    navigation: 'usabilityDefect',
+    timing: 'usabilityDefect',
+    error: 'reliabilityFailure',
+    positive: 'other',
+  });
+
+/**
  * Default observer-finding policy.
  *
  * Two categories are dropped, and the reasons are different:
@@ -191,8 +207,7 @@ export const OBSERVER_SEVERITY_MAP: Readonly<
  *   clean finish.
  *
  * Everything else is reported with a kind derived from the observer's
- * own category. The mapping is data, not inference: the runtime never
- * guesses a `FindingKind` the observer did not imply.
+ * own category.
  */
 export const DEFAULT_OBSERVER_CLASSIFIER: ObserverFindingClassifier = (finding) => {
   if (finding.category === 'positive') {
@@ -207,19 +222,6 @@ export const DEFAULT_OBSERVER_CLASSIFIER: ObserverFindingClassifier = (finding) 
     kind: OBSERVER_FINDING_KIND[finding.category],
   };
 };
-
-const OBSERVER_FINDING_KIND: Readonly<
-  Record<ObserverFinding['category'], FindingKind>
-> = Object.freeze({
-  dead_end: 'workflowBlocker',
-  friction: 'usabilityDefect',
-  confusion: 'comprehensionGap',
-  trust: 'trustDefect',
-  navigation: 'usabilityDefect',
-  timing: 'usabilityDefect',
-  error: 'reliabilityFailure',
-  positive: 'other',
-});
 
 /**
  * The participant profile #57's own retention implies.
@@ -245,17 +247,4 @@ export function defaultParticipantProfile(identity: SyntheticIdentity): Capabili
         ? Object.freeze({ kind: 'limitedRecent' as const, windowSteps: 1 })
         : Object.freeze({ kind: 'fullHistory' as const }),
   });
-}
-
-/** The environment's declared entry point, or `undefined` when absent. */
-export function environmentBaseUrl(
-  model: ProductModel,
-  environmentId: EnvironmentId,
-): string | undefined {
-  return model.environments.find((e) => e.id === environmentId)?.endpoint.baseUrl;
-}
-
-/** The declared product of the model, used for cross-checks. */
-export function modelProductId(model: ProductModel): ProductId {
-  return model.product.id;
 }

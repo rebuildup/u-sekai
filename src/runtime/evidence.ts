@@ -48,7 +48,6 @@ import type {
 import type { ObserverReport } from '../domain/observer.js';
 import type { SelfReport } from '../domain/self-report.js';
 import { fnv1aHex } from '../evidence/hash.js';
-import { VERSION } from '../version.js';
 
 /** One identity's contribution to a run. */
 export interface IdentityRunRecord {
@@ -92,17 +91,24 @@ export class EvidenceCatalogue {
   readonly all: ReadonlyArray<EvidenceRef>;
   readonly byEventFamily: ReadonlyMap<string, ReadonlyArray<EvidenceRef>>;
   readonly byParticipant: ReadonlyMap<string, ReadonlyArray<EvidenceRef>>;
-  readonly byObserverFinding: ReadonlyMap<string, EvidenceRef>;
-  readonly bySelfReport: ReadonlyMap<string, EvidenceRef>;
   readonly runtimeErrors: ReadonlyArray<{ ts: string; where: string; message: string }>;
+  /**
+   * The two single-handle indexes, held privately.
+   *
+   * A `ReadonlyMap` annotation does not make a `Map` read-only at
+   * runtime — `Object.freeze` does not touch internal slots — so
+   * exposing them would hand a caller a live `.set()` on the run's
+   * evidence. They are read through accessors instead, which is the
+   * only reason they are not public.
+   */
+  readonly #byObserverFinding = new Map<string, EvidenceRef>();
+  readonly #bySelfReport = new Map<string, EvidenceRef>();
   /** Identities with at least one captured observation. */
   readonly #observed = new Set<string>();
 
   constructor(input: RunEvidenceInput) {
     const byEventFamily = new Map<string, EvidenceRef[]>();
     const byParticipant = new Map<string, EvidenceRef[]>();
-    const byObserverFinding = new Map<string, EvidenceRef>();
-    const bySelfReport = new Map<string, EvidenceRef>();
 
     const add = (ref: EvidenceRef, family: string, participant?: string): void => {
       const familyBucket = byEventFamily.get(family);
@@ -183,7 +189,7 @@ export class EvidenceCatalogue {
             : `self-report: goal "${record.selfReport.goal || '(none)'}", ` +
               `would return: ${record.selfReport.wouldReturn ? 'yes' : 'no'}`,
       });
-      bySelfReport.set(record.identityId, ref);
+      this.#bySelfReport.set(record.identityId, ref);
       add(ref, 'selfReport', record.identityId);
     }
 
@@ -197,7 +203,7 @@ export class EvidenceCatalogue {
         observedAt: input.observer.capturedAt,
         summary: `[${finding.severity}/${finding.category}] ${finding.summary}`.slice(0, 500),
       });
-      byObserverFinding.set(finding.id, ref);
+      this.#byObserverFinding.set(finding.id, ref);
       add(ref, 'observer');
     }
 
@@ -216,8 +222,6 @@ export class EvidenceCatalogue {
     this.all = Object.freeze([...byEventFamily.values()].flat());
     this.byEventFamily = freezeMap(byEventFamily);
     this.byParticipant = freezeMap(byParticipant);
-    this.byObserverFinding = new Map(byObserverFinding);
-    this.bySelfReport = new Map(bySelfReport);
     this.runtimeErrors = Object.freeze(
       rollUpRuntimeErrors(input.events, input.identities, input.endedAt).map((e) =>
         Object.freeze({ ...e }),
@@ -228,6 +232,16 @@ export class EvidenceCatalogue {
   /** Handles for one identity's own contribution to the run. */
   evidenceForIdentity(identityId: string): ReadonlyArray<EvidenceRef> {
     return this.byParticipant.get(identityId) ?? Object.freeze([]);
+  }
+
+  /** The one reference that stands for an observer finding, if any. */
+  evidenceForObserverFinding(observerFindingId: string): EvidenceRef | undefined {
+    return this.#byObserverFinding.get(observerFindingId);
+  }
+
+  /** The one reference that stands for an identity's self-report, if any. */
+  evidenceForSelfReport(identityId: string): EvidenceRef | undefined {
+    return this.#bySelfReport.get(identityId);
   }
 
   /**
@@ -443,8 +457,10 @@ export function rollUpBehavioralEvidence(input: {
     ),
     terminationReasonByParticipant,
     participantConfigurations: input.participantConfigurations,
-    experimentSummaryHash: fnv1aHex(
-      `${input.events.map((e) => `${e.type}@${e.ts}`).join('|')}|${VERSION}`,
-    ),
+    // The same `type@ts` recipe `src/experiment/runner.ts` uses, and
+    // nothing added to it: a consumer that correlates a #63 run with an
+    // experiment run must see one convention, so a package version
+    // deliberately stays out of the hash (it is in the manifest).
+    experimentSummaryHash: fnv1aHex(input.events.map((e) => `${e.type}@${e.ts}`).join('|')),
   };
 }

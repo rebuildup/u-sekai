@@ -69,6 +69,27 @@ function planDigest(plan: EvaluationPlan): string {
 }
 
 /**
+ * A short, stable token for a run id, for composing bounded review ids.
+ *
+ * #57 accepts a declared `runId` of up to 256 characters. #61 caps a
+ * review id at 128. Spelling a setup-failure id as
+ * `sf-<runId>-re-1` therefore produces an id #61 would reject for any
+ * caller that declared a long run id — and the failure is silent,
+ * because `setupFailureFromRuntimeError` takes its id as a
+ * `SetupFailureId` and never re-parses it. Hashing removes the length
+ * coupling entirely: the composed id is `sf-` plus 16 hex characters
+ * plus a short suffix, comfortably inside #61's bound for *any* run id.
+ *
+ * 64 bits of run id is ample here. The token only has to keep two
+ * setup failures of the *same* run apart, and the ordinal already does
+ * that; its other job is to keep one run's ids from colliding with
+ * another's, which 64 bits does for any realistic evaluation count.
+ */
+export function runToken(runId: EvaluationRunId | string): string {
+  return createHash('sha256').update(String(runId), 'utf8').digest('hex').slice(0, 16);
+}
+
+/**
  * The run id a plan implies.
  *
  * `plan.planKey` already encodes the trigger's idempotency key and the
