@@ -29,9 +29,11 @@
  *
  * 1. the workflow checks out `github.event.pull_request.head.sha`, so
  *    `package.json` is the head's; and
- * 2. this module refuses to pass unless the working tree is provably at
- *    that head SHA, so a future edit that drops the `ref:` fails loudly
- *    instead of silently reverting to the merge.
+ * 2. this module re-derives the head SHA from the event payload GitHub
+ *    writes to `GITHUB_EVENT_PATH` and refuses to pass unless the working
+ *    tree is provably at that commit. The two SHA sources are read from
+ *    different places and have to agree, so a future edit that drops the
+ *    `ref:` fails loudly instead of silently reverting to the merge.
  *
  * Every rule below is fail-closed: an unreadable, unparseable, or
  * unverifiable fact is a violation, never a pass.
@@ -79,15 +81,35 @@ const STABLE_SEMVER_PATTERN = /^[0-9]+\.[0-9]+\.[0-9]+$/;
  *
  * Read from the event payload rather than from `GITHUB_SHA`, because
  * `GITHUB_SHA` is the synthetic merge on `pull_request` and is exactly
- * the value this gate must not trust.
+ * the value this gate must not trust. The workflow pins its checkout to
+ * the same field, so the two are derived independently and must agree.
  *
  * @param {unknown} event a `pull_request` event payload (or any subset)
  * @returns {string | null} the head SHA, or `null` when absent/unusable
  */
 export function expectedHeadShaFromEvent(event) {
   const pullRequest = asRecord(asRecord(event).pull_request);
-  const sha = asRecord(pullRequest.head).sha;
-  return typeof sha === 'string' && sha.length > 0 ? sha : null;
+  return nonEmptyString(asRecord(pullRequest.head).sha);
+}
+
+/**
+ * Parse the event payload GitHub writes to `GITHUB_EVENT_PATH`.
+ *
+ * @param {string} eventPath
+ * @returns {{ event: unknown, error: string | null }}
+ */
+export function readEventPayload(eventPath) {
+  let raw;
+  try {
+    raw = readFileSync(eventPath, 'utf8');
+  } catch (error) {
+    return { event: null, error: `cannot read the event payload at ${eventPath}: ${errorMessage(error)}` };
+  }
+  try {
+    return { event: JSON.parse(raw), error: null };
+  } catch (error) {
+    return { event: null, error: `the event payload at ${eventPath} is not valid JSON: ${errorMessage(error)}` };
+  }
 }
 
 /**
@@ -150,16 +172,10 @@ export function readCheckedOutSha(cwd) {
 export function evaluateReleaseSource(input) {
   /** @type {ReleaseSourceViolation[]} */
   const violations = [];
-  const headRef = typeof input.headRef === 'string' ? input.headRef.trim() : '';
-  const version = typeof input.version === 'string' ? input.version.trim() : null;
-  const expectedHeadSha =
-    typeof input.expectedHeadSha === 'string' && input.expectedHeadSha.length > 0
-      ? input.expectedHeadSha
-      : null;
-  const checkedOutSha =
-    typeof input.checkedOutSha === 'string' && input.checkedOutSha.length > 0
-      ? input.checkedOutSha
-      : null;
+  const headRef = nonEmptyString(input.headRef)?.trim() ?? '';
+  const version = nonEmptyString(input.version)?.trim() ?? null;
+  const expectedHeadSha = nonEmptyString(input.expectedHeadSha);
+  const checkedOutSha = nonEmptyString(input.checkedOutSha);
 
   // --- the working tree must be provably the head commit -------------------
   // Checked first because every other fact is read from that tree: if we
@@ -232,6 +248,17 @@ export function evaluateReleaseSource(input) {
   }
 
   return { ok: violations.length === 0, expectedRef, version, violations };
+}
+
+/**
+ * A non-empty string, or `null`. Used so "absent" and "present but empty"
+ * are one condition everywhere, which is what every rule here wants.
+ *
+ * @param {unknown} value
+ * @returns {string | null}
+ */
+function nonEmptyString(value) {
+  return typeof value === 'string' && value.length > 0 ? value : null;
 }
 
 /**
@@ -323,15 +350,32 @@ export function main(argv, io = DEFAULT_IO, env = process.env, cwd = process.cwd
   if (argv.includes('--help') || argv.includes('-h')) {
     io.info(
       'usage: node scripts/release-source-check.mjs\n' +
-        '  Requires HEAD_REF, EXPECTED_HEAD_SHA in the environment; verifies that the\n' +
-        '  current working tree is the PR head commit and that its package.json version\n' +
-        '  matches the head branch name. Exits non-zero on any violation.',
+        '  Requires HEAD_REF in the environment. Reads the pull request head SHA from\n' +
+        '  GITHUB_EVENT_PATH (GitHub sets this for every workflow run), then verifies\n' +
+        '  that the current working tree is that commit and that its package.json\n' +
+        '  version matches the head branch name. Exits non-zero on any violation.',
     );
     return 0;
   }
+
+  // The head SHA comes from the event payload, not from an env var the
+  // workflow chose. Deriving it here means the workflow cannot mislabel
+  // the commit it checked out: the two are read from different places
+  // and have to agree.
+  const eventPath = nonEmptyString(env.GITHUB_EVENT_PATH);
+  if (eventPath === null) {
+    io.error(
+      '::error::GITHUB_EVENT_PATH is not set, so the pull request head commit cannot be ' +
+        'identified; refusing to report a result for an unidentified commit.',
+    );
+    return 1;
+  }
+  const { event, error } = readEventPayload(eventPath);
+  if (error !== null) io.error(`::error::${error}`);
+
   return runGate(io, cwd, {
     headRef: env.HEAD_REF ?? null,
-    expectedHeadSha: env.EXPECTED_HEAD_SHA ?? null,
+    expectedHeadSha: expectedHeadShaFromEvent(event),
   });
 }
 

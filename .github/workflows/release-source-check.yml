@@ -26,9 +26,11 @@ name: release-source-check
 # That is the false green this pinning removes; `test/unit/` reproduces it
 # with a real git merge and asserts both the pre-fix and post-fix verdicts.
 #
-# `scripts/release-source-check.mjs` re-checks that the working tree really
-# is the head SHA and fails closed when it is not, so a future edit that
-# drops the `ref:` fails loudly instead of silently reverting to the merge.
+# `scripts/release-source-check.mjs` re-derives the head SHA from
+# `GITHUB_EVENT_PATH` and independently checks that the working tree really
+# is that commit, failing closed when it is not. The two are read from
+# different places, so a future edit that drops the `ref:` fails loudly
+# instead of silently reverting to the merge.
 
 on:
   pull_request:
@@ -43,32 +45,15 @@ jobs:
   release-source-check:
     name: release-source-check
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
-      # Fail closed before spending a checkout: without the head SHA there
-      # is nothing to verify, and a gate that cannot identify its subject
-      # must not report success.
-      - name: Resolve the pull request head commit
-        id: head
-        env:
-          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-          HEAD_REF: ${{ github.head_ref }}
-        run: |
-          set -euo pipefail
-          if [ -z "${HEAD_SHA}" ]; then
-            echo "::error::github.event.pull_request.head.sha is empty; this gate cannot identify the commit it is verifying, so it will not report a result."
-            exit 1
-          fi
-          echo "sha=${HEAD_SHA}" >> "$GITHUB_OUTPUT"
-          echo "release-source-check will verify head commit ${HEAD_SHA} (branch ${HEAD_REF})."
-
       - uses: actions/checkout@v4
         with:
           # The head commit, never the synthetic merge. See the note above.
-          ref: ${{ steps.head.outputs.sha }}
+          ref: ${{ github.event.pull_request.head.sha }}
           persist-credentials: false
 
       - name: Check that the head branch name matches the head commit's package version
         env:
           HEAD_REF: ${{ github.head_ref }}
-          EXPECTED_HEAD_SHA: ${{ steps.head.outputs.sha }}
         run: node scripts/release-source-check.mjs

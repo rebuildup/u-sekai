@@ -153,16 +153,22 @@ describe('the head SHA is read from the event payload, not from GITHUB_SHA', () 
 describe('the committed workflow verifies the head commit, not the synthetic merge', () => {
   const workflow = readFileSync(workflowPath, 'utf8');
 
+  function checkoutRef(text: string): string {
+    return /- uses: actions\/checkout@[\w.]+\n(?: {8}.*\n)*? {8}ref: *(.*)\n/.exec(text)?.[1] ?? '';
+  }
+
   it('pins actions/checkout to the pull request head SHA', () => {
     // Without an explicit `ref:`, actions/checkout resolves GITHUB_SHA,
     // which on pull_request is refs/pull/<n>/merge. That is the bug.
     const checkoutBlock = /- uses: actions\/checkout@[\w.]+\n(?: {8}.*\n)*/.exec(workflow);
     expect(checkoutBlock, 'the workflow has an actions/checkout step').not.toBeNull();
-    expect(checkoutBlock?.[0]).toMatch(/ref: \$\{\{ steps\.head\.outputs\.sha \}\}/);
+    expect(checkoutBlock?.[0]).toContain('ref: ${{ github.event.pull_request.head.sha }}');
   });
 
-  it('derives that SHA from github.event.pull_request.head.sha', () => {
-    expect(workflow).toContain('HEAD_SHA: ${{ github.event.pull_request.head.sha }}');
+  it('derives that SHA from the pull request head, not from GITHUB_SHA', () => {
+    expect(workflow).toContain('ref: ${{ github.event.pull_request.head.sha }}');
+    // `ref:` must never be left to default to the synthetic merge.
+    expect(checkoutRef(workflow)).not.toBe('GITHUB_SHA');
   });
 
   it('never trades the gate for a success it cannot back', () => {
@@ -285,6 +291,42 @@ describe('the false green, reproduced against a real git merge', () => {
     return { headSha, mergeSha, root };
   }
 
+  /**
+   * Run the shipped gate exactly as the workflow does. A non-zero exit is
+   * the expected result for a failing gate, not a test failure, so the
+   * streams are returned rather than thrown.
+   */
+  function runShippedGate(
+    root: string,
+    headRef: string,
+    eventHeadSha: string,
+  ): { stdout: string; stderr: string; code: number } {
+    // The gate reads its own source from the tree it verifies; copy the
+    // real scripts in rather than reimplementing the logic here.
+    execFileSync('cp', ['-r', path.join(repoRoot, 'scripts'), path.join(root, 'scripts')]);
+    const eventPath = path.join(root, 'event.json');
+    writeFileSync(
+      eventPath,
+      JSON.stringify({ pull_request: { head: { ref: headRef, sha: eventHeadSha } } }),
+    );
+    try {
+      const stdout = execFileSync('node', [path.join(root, 'scripts/release-source-check.mjs')], {
+        cwd: root,
+        encoding: 'utf8',
+        env: { ...process.env, HEAD_REF: headRef, GITHUB_EVENT_PATH: eventPath },
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
+      return { stdout, stderr: '', code: 0 };
+    } catch (error) {
+      const failure = error as { stdout?: string; stderr?: string; status?: number };
+      return {
+        stdout: String(failure.stdout ?? ''),
+        stderr: String(failure.stderr ?? ''),
+        code: failure.status ?? -1,
+      };
+    }
+  }
+
   it('sees the base version on the merge tree and the head version on the head tree', () => {
     const { headSha, mergeSha, root } = buildFalseGreenFixture();
 
@@ -336,72 +378,60 @@ describe('the false green, reproduced against a real git merge', () => {
     // synthetic merge, and the merge's package.json happens to agree
     // with the branch name. The gate must refuse to report a result.
     const { headSha, root } = buildFalseGreenFixture();
-    execFileSync('cp', ['-r', path.join(repoRoot, 'scripts'), path.join(root, 'scripts')]);
 
     // Stand on the merge (what an unpinned checkout gives) while still
     // being asked to verify the head.
-    const mergeHead = git(root, 'rev-parse', 'synthetic-merge');
-    git(root, 'checkout', '-q', '--detach', mergeHead);
+    git(root, 'checkout', '-q', '--detach', git(root, 'rev-parse', 'synthetic-merge'));
 
-    let failedAsExpected = false;
-    try {
-      execFileSync('node', [path.join(root, 'scripts/release-source-check.mjs')], {
-        cwd: root,
-        encoding: 'utf8',
-        env: { ...process.env, HEAD_REF: 'release-0-3-0', EXPECTED_HEAD_SHA: headSha },
-        stdio: ['ignore', 'pipe', 'pipe'],
-      });
-    } catch (error) {
-      failedAsExpected = true;
-      expect(String((error as { stderr?: string }).stderr ?? '')).toContain('checkout-not-at-head');
-    }
-    expect(failedAsExpected, 'an unpinned checkout must fail the gate').toBe(true);
+    const gate = runShippedGate(root, 'release-0-3-0', headSha);
+    expect(gate.code).not.toBe(0);
+    expect(gate.stderr).toContain('checkout-not-at-head');
   });
 
-  it('runs the shipped script end to end and exits non-zero on the false-green fixture', () => {    const { headSha, root } = buildFalseGreenFixture();
+  it('refuses to report anything without an event payload to identify the head', () => {
+    const { headSha, root } = buildFalseGreenFixture();
     git(root, 'checkout', '-q', '--detach', headSha);
-    // The gate reads its own source from the tree it verifies; copy the
-    // real scripts in rather than reimplementing the logic here.
     execFileSync('cp', ['-r', path.join(repoRoot, 'scripts'), path.join(root, 'scripts')]);
 
-    let failedAsExpected = false;
+    let stderr = '';
     try {
       execFileSync('node', [path.join(root, 'scripts/release-source-check.mjs')], {
         cwd: root,
         encoding: 'utf8',
-        env: { ...process.env, HEAD_REF: 'release-0-3-0', EXPECTED_HEAD_SHA: headSha },
+        env: { ...process.env, HEAD_REF: 'release-0-3-0', GITHUB_EVENT_PATH: '' },
         stdio: ['ignore', 'pipe', 'pipe'],
       });
     } catch (error) {
-      failedAsExpected = true;
-      const stderr = String((error as { stderr?: string }).stderr ?? '');
-      expect(stderr).toContain('head-ref-version-mismatch');
-      expect(stderr).toContain("PR head 'release-0-3-0'");
+      stderr = String((error as { stderr?: string }).stderr ?? '');
     }
-    expect(failedAsExpected, 'the shipped gate must exit non-zero here').toBe(true);
+    expect(stderr).toContain('GITHUB_EVENT_PATH is not set');
   });
 
-  it('exits zero from the shipped script when the head branch is genuinely consistent', () => {    const { headSha, root } = buildFalseGreenFixture();
+  it('runs the shipped script end to end and exits non-zero on the false-green fixture', () => {
+    const { headSha, root } = buildFalseGreenFixture();
     git(root, 'checkout', '-q', '--detach', headSha);
-    // Bring the head branch in line with its own name, then re-verify.
+
+    const gate = runShippedGate(root, 'release-0-3-0', headSha);
+    expect(gate.code).not.toBe(0);
+    expect(gate.stderr).toContain('head-ref-version-mismatch');
+    expect(gate.stderr).toContain("PR head 'release-0-3-0'");
+  });
+
+  it('exits zero from the shipped script when the head branch is genuinely consistent', () => {
+    const { headSha, root } = buildFalseGreenFixture();
+    git(root, 'checkout', '-q', '--detach', headSha);
+    // The branch is release-0-3-0; bring its content in line with its name.
     writePkg(root, '0.3.0');
     git(root, 'add', '-A');
     git(root, 'commit', '-q', '-m', 'bump to 0.3.0');
     const consistentHead = git(root, 'rev-parse', 'HEAD');
-    execFileSync('cp', ['-r', path.join(repoRoot, 'scripts'), path.join(root, 'scripts')]);
+    git(root, 'checkout', '-q', '--detach', consistentHead);
 
-    const stdout = execFileSync(
-      'node',
-      [path.join(root, 'scripts/release-source-check.mjs')],
-      {
-        cwd: root,
-        encoding: 'utf8',
-        env: { ...process.env, HEAD_REF: 'release-0-3-0', EXPECTED_HEAD_SHA: consistentHead },
-        stdio: ['ignore', 'pipe', 'pipe'],
-      },
-    );
-    expect(stdout).toContain("head 'release-0-3-0'");
-    expect(stdout).toContain("version '0.3.0'");
+    const gate = runShippedGate(root, 'release-0-3-0', consistentHead);
+    expect(gate.stderr).toBe('');
+    expect(gate.code).toBe(0);
+    expect(gate.stdout).toContain("head 'release-0-3-0'");
+    expect(gate.stdout).toContain("version '0.3.0'");
   });
 });
 
