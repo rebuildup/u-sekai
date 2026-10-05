@@ -62,7 +62,16 @@ import {
   type Environment,
   type EnvironmentClass,
 } from '../product/environment.js';
-import { ALLOWED_STATE_RETENTION, MAX_CONCURRENT_SESSIONS, parseSyntheticIdentity } from '../product/identity.js';
+import {
+  IDENTITY_LIFECYCLES,
+  MAX_CONCURRENT_SESSIONS,
+  STATE_RETENTIONS,
+  assertRetentionAllowed,
+  parseSyntheticIdentity,
+  type IdentityLifecycle,
+  type RetentionForLifecycle,
+  type StateRetention,
+} from '../product/identity.js';
 import type { SyntheticIdentity } from '../product/identity.js';
 import { parseSyntheticCohort } from '../product/cohort.js';
 import { MAX_RUNS_PER_DAY, MAX_RUNS_PER_EVENT, parseReviewProgram } from '../product/program.js';
@@ -486,7 +495,11 @@ function parseIdentitiesBlock(
     const body = requireMapping(raw[name], nameField);
     rejectUnknownKeys(body, IDENTITY_KEYS, nameField);
 
-    const lifecycle = requireNonEmptyString(body['lifecycle'], `${nameField}.lifecycle`, 32);
+    // Lifecycle first, and validated against the domain's own list, so
+    // that it is a known value before it is used to derive or check
+    // anything else. Narrowing here is what makes the retention below a
+    // function of a lifecycle rather than a free-standing string.
+    const lifecycle = requireOneOf(body['lifecycle'], IDENTITY_LIFECYCLES, `${nameField}.lifecycle`);
     const displayName =
       body['displayName'] === undefined ? name : requireNonEmptyString(body['displayName'], `${nameField}.displayName`);
     // A persona is a claim about a simulated person's situation. It has
@@ -495,17 +508,11 @@ function parseIdentitiesBlock(
     // nobody.
     const persona = requireNonEmptyString(body['persona'], `${nameField}.persona`, 4_000);
 
-    const stateRetention =
-      body['stateRetention'] === undefined
-        ? (ALLOWED_STATE_RETENTION[lifecycle as keyof typeof ALLOWED_STATE_RETENTION]?.[0] as string)
-        : requireNonEmptyString(body['stateRetention'], `${nameField}.stateRetention`, 32);
-    if (stateRetention === undefined || !(lifecycle in ALLOWED_STATE_RETENTION)) {
-      throw new UseSekaiConfigError(
-        `${nameField}.lifecycle must be one of: ${Object.keys(ALLOWED_STATE_RETENTION).join(', ')}`,
-        `${nameField}.lifecycle`,
-        { reason: 'not_in_enum', received: lifecycle },
-      );
-    }
+    const stateRetention = readIdentityRetention(
+      body['stateRetention'],
+      lifecycle,
+      `${nameField}.stateRetention`,
+    );
 
     const stateRef =
       body['stateRef'] === undefined
@@ -547,6 +554,77 @@ function parseIdentitiesBlock(
   }
 
   return Object.freeze(identities);
+}
+
+/**
+ * Resolve an identity's state retention from what the file declares.
+ *
+ * ## The rule
+ *
+ * Retention is a property of the lifecycle, not a free choice — ADR-0011's
+ * table, which the domain now enforces as a compile-time guarantee on
+ * `SyntheticIdentity` and at runtime in `parseIdentityCapabilityBounds`.
+ * A `u-sekai.yml` therefore states a **lifecycle**, and may state a
+ * **retention** only as a refinement within what that lifecycle admits:
+ *
+ * | `lifecycle`   | `stateRetention` accepted | default when omitted |
+ * | ------------- | ------------------------- | ------------------- |
+ * | `ephemeral`   | `none`                    | `none`              |
+ * | `release`     | `session`, `durable`      | `session`           |
+ * | `persistent`  | `durable`                 | `durable`           |
+ *
+ * The defaults are the *least* retention each lifecycle admits, so a
+ * config author writes as little as possible and gets the most
+ * conservative identity the lifecycle allows. This matters for `release`,
+ * where `session` and `durable` are both legal: the file must opt in to
+ * durable state, because that is the difference between an identity that
+ * can be reloaded within a release and one that accumulates across them.
+ *
+ * **A config cannot set one uniform retention for all identities**, and
+ * this is where that is caught. Such a config is wrong for two of the
+ * three lifecycles — `none` is illegal for `persistent`, `durable` is
+ * illegal for `ephemeral` — and it would be wrong *silently* if the
+ * matrix were left to the caller, because the identity would load and
+ * then be dropped later. Rejecting it here also means the diagnostic
+ * names the file's own key and lists the alternatives.
+ *
+ * @param declared  the file's `stateRetention`, or `undefined`
+ * @param lifecycle already validated against `IDENTITY_LIFECYCLES`
+ */
+function readIdentityRetention(
+  declared: unknown,
+  lifecycle: IdentityLifecycle,
+  field: string,
+): StateRetention {
+  if (declared === undefined) {
+    return defaultRetentionFor(lifecycle);
+  }
+  const retention = requireOneOf(declared, STATE_RETENTIONS, field);
+  // The domain owns the matrix, so it owns the check. `asConfigError`
+  // re-throws this as a configuration error with the same message, the
+  // file's own field path, and the permitted list.
+  asConfigError(() => assertRetentionAllowed(lifecycle, retention, field), field);
+  return retention;
+}
+
+/**
+ * The retention a lifecycle gets when the file does not choose one.
+ *
+ * A `switch` rather than an index into `ALLOWED_STATE_RETENTION`, so the
+ * compiler can check this against `IDENTITY_LIFECYCLES`: a fourth
+ * lifecycle added to the domain is a compile error here rather than a
+ * silent `undefined` at load time. The agreement with the domain's table
+ * is pinned by a test, so the copy cannot drift either.
+ */
+function defaultRetentionFor(lifecycle: IdentityLifecycle): RetentionForLifecycle<IdentityLifecycle> {
+  switch (lifecycle) {
+    case 'ephemeral':
+      return 'none';
+    case 'release':
+      return 'session';
+    case 'persistent':
+      return 'durable';
+  }
 }
 
 /**
