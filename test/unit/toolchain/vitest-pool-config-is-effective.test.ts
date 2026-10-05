@@ -151,12 +151,13 @@ function isInTypecheckProgram(candidate: string): boolean {
 describe('the default Vitest profile', () => {
   it('declares no key from the removed forks / poolOptions eras', () => {
     expect(testBlock).toBeTypeOf('object');
+    const declared = testBlock ?? {};
     // `test.forks` — unreadable since Vitest 2.
-    expect(Object.hasOwn(testBlock as object, 'forks')).toBe(false);
+    expect(Object.hasOwn(declared, 'forks')).toBe(false);
     // `test.poolOptions` — deprecated by Vitest 5 with
     // "`test.poolOptions` was removed in Vitest 4"; anything nested in it
     // is inert, `singleFork` included.
-    expect(Object.hasOwn(testBlock as object, 'poolOptions')).toBe(false);
+    expect(Object.hasOwn(declared, 'poolOptions')).toBe(false);
   });
 
   it('uses the forks pool', () => {
