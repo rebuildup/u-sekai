@@ -68,7 +68,6 @@ import {
   CadenceTrigger,
   EventTrigger,
   ReviewProgram,
-  ReviewTrigger,
   ReviewTriggerKind,
 } from '../product/index.js';
 import { requireIsoInstant, requireRecord, rejectUnknownKeys } from '../product/validation.js';
@@ -320,14 +319,6 @@ export function resolveTriggers(
     resolution.nextCadenceDueAt = nextCadenceDueAt;
   }
   return Object.freeze(resolution);
-}
-
-/** Pick the trigger declaration of one kind, for callers that need it. */
-export function declaredTrigger(
-  program: ReviewProgram,
-  kind: ReviewTriggerKind,
-): ReviewTrigger | undefined {
-  return program.triggers.find((t) => t.kind === kind);
 }
 
 /**

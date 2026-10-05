@@ -46,7 +46,6 @@ export {
 
 export {
   LINEAGE_GAP_EXPLANATIONS,
-  assertVersionLineage,
   compareObservations,
   parseEnvironmentObservation,
   parseEnvironmentObservations,
@@ -69,7 +68,6 @@ export {
   TRIGGER_PRECEDENCE,
   cadenceKey,
   cadenceSlotAt,
-  declaredTrigger,
   eventDueAt,
   eventKey,
   manualKey,
@@ -105,8 +103,6 @@ export {
   EVALUATION_MODES,
   RETENTION_RESOLUTIONS,
   buildEvaluationPlan,
-  comparePlanKeys,
-  planTargetKey,
   type AuthorityEnvelope,
   type CohortSelection,
   type EscalationPolicy,
@@ -124,7 +120,6 @@ export {
   MAX_MUTATING_ACTIONS_PER_PLAN,
   MAX_VERIFICATIONS_PER_PLAN,
   NOT_DUE_REASONS,
-  isBudgetDenial,
   planEvaluation,
   type NotDueReason,
   type PlanDecision,

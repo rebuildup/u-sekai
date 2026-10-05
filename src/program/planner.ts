@@ -66,6 +66,7 @@
 
 import {
   ALLOWED_STATE_RETENTION,
+  CohortMembershipIntent,
   Environment,
   EnvironmentId,
   ProductModel,
@@ -81,11 +82,12 @@ import {
 import { requireInteger, requireIsoInstant } from '../product/validation.js';
 import {
   BudgetLedger,
-  BudgetDenialReason,
   assertLedgerMatchesProgram,
   createBudgetLedger,
   defaultBudgetWindow,
   ledgerPlannedAt,
+  remainingCostUnits,
+  remainingRuns,
   reserve,
 } from './budget.js';
 import { StageCostRates, parseStageCostRates, planCost } from './cost.js';
@@ -226,53 +228,25 @@ export function planEvaluation(input: PlanEvaluationInput): PlanDecision {
   const resolution = resolveTriggers(program, signals, nowMs);
   if (resolution.candidates.length === 0) {
     if (resolution.pendingEvents.length > 0) {
-      const earliest = resolution.pendingEvents
-        .map((p) => p.dueAt)
-        .sort()
-        .find((d) => d !== undefined);
-      const decision: {
-        outcome: 'not-due';
-        reason: NotDueReason;
-        suppressed: ReadonlyArray<SuppressedTrigger>;
-        detail: Readonly<Record<string, unknown>>;
-        nextDueAt?: string;
-        ledger: BudgetLedger;
-      } = {
-        outcome: 'not-due',
+      return notDue({
         reason: 'debounce-pending',
-        suppressed: Object.freeze([]),
-        detail: Object.freeze({
-          pending: Object.freeze([...resolution.pendingEvents]),
+        detail: {
+          pending: resolution.pendingEvents,
           explanation: 'a matching event is inside its declared debounce window',
-        }),
+        },
+        nextDueAt: earliest(resolution.pendingEvents.map((p) => p.dueAt)),
         ledger,
-      };
-      if (earliest !== undefined) {
-        decision.nextDueAt = earliest;
-      }
-      return Object.freeze(decision);
+      });
     }
-    const idle: {
-      outcome: 'not-due';
-      reason: NotDueReason;
-      suppressed: ReadonlyArray<SuppressedTrigger>;
-      detail: Readonly<Record<string, unknown>>;
-      nextDueAt?: string;
-      ledger: BudgetLedger;
-    } = {
-      outcome: 'not-due',
+    return notDue({
       reason: 'no-trigger',
-      suppressed: Object.freeze([]),
-      detail: Object.freeze({
-        declaredTriggers: Object.freeze(program.triggers.map((t) => t.kind)),
-        deliveredSignals: Object.freeze(signals.map((s) => s.kind)),
-      }),
+      detail: {
+        declaredTriggers: program.triggers.map((t) => t.kind),
+        deliveredSignals: signals.map((s) => s.kind),
+      },
+      nextDueAt: resolution.nextCadenceDueAt,
       ledger,
-    };
-    if (resolution.nextCadenceDueAt !== undefined) {
-      idle.nextDueAt = resolution.nextCadenceDueAt;
-    }
-    return Object.freeze(idle);
+    });
   }
 
   const winner = resolution.candidates[0];
@@ -304,17 +278,17 @@ export function planEvaluation(input: PlanEvaluationInput): PlanDecision {
   // 3. Is the requested mode satisfiable?
   const mode = resolveMode(input.requestedMode, winner, lineageResolution.ok);
   if (mode === 'releaseTransition' && !lineageResolution.ok) {
-    return Object.freeze({
-      outcome: 'not-due',
+    return notDue({
       reason: 'release-transition-lineage-missing',
-      suppressed,
-      detail: Object.freeze({
+      detail: {
         gap: lineageResolution.gap,
         explanation: LINEAGE_GAP_EXPLANATIONS[lineageResolution.gap],
-        observedVersions: Object.freeze(
-          environmentObservations.map((o) => ({ version: o.version, observedAt: o.observedAt })),
-        ),
-      }),
+        observedVersions: environmentObservations.map((o) => ({
+          version: o.version,
+          observedAt: o.observedAt,
+        })),
+      },
+      suppressed,
       ledger,
     });
   }
@@ -402,28 +376,59 @@ export function planEvaluation(input: PlanEvaluationInput): PlanDecision {
     });
   }
 
-  return Object.freeze({
-    outcome: 'not-due',
+  return notDue({
     reason: 'budget-exhausted',
-    suppressed,
-    detail: Object.freeze({
+    detail: {
       denial: result.reason,
       requestedCostUnits: cost.totalCostUnits,
-      remainingCostUnits: Math.max(0, program.budget.maxCostUnitsPerDay - ledger.costUnitsSpent),
-      remainingRuns: Math.max(0, program.budget.maxRunsPerDay - ledger.runsSpent),
+      remainingCostUnits: remainingCostUnits(ledger),
+      remainingRuns: remainingRuns(ledger),
       spentCostUnits: ledger.costUnitsSpent,
       spentRuns: ledger.runsSpent,
       window: ledger.window,
-    }),
+    },
+    suppressed,
     ledger,
   });
 }
 
-/** Denial reasons a caller may want to treat distinctly. */
-export function isBudgetDenial(reason: string): reason is BudgetDenialReason {
-  return reason === 'cost-budget-exhausted' ||
-    reason === 'run-budget-exhausted' ||
-    reason === 'event-run-budget-exhausted';
+/**
+ * Build a `not-due` decision.
+ *
+ * Every one of these means "no plan was emitted, and the ledger was not
+ * charged", which is why they share a constructor: a caller reading
+ * `outcome` should never have to check which of them additionally
+ * mutated something.
+ */
+function notDue(input: {
+  readonly reason: NotDueReason;
+  readonly detail: Record<string, unknown>;
+  readonly ledger: BudgetLedger;
+  readonly suppressed?: ReadonlyArray<SuppressedTrigger>;
+  /** `| undefined` so a caller may pass a computed value through directly. */
+  readonly nextDueAt?: string | undefined;
+}): PlanDecision {
+  const decision: {
+    -readonly [K in keyof Extract<PlanDecision, { outcome: 'not-due' }>]: Extract<
+      PlanDecision,
+      { outcome: 'not-due' }
+    >[K];
+  } = {
+    outcome: 'not-due',
+    reason: input.reason,
+    suppressed: Object.freeze([...(input.suppressed ?? [])]),
+    detail: Object.freeze({ ...input.detail }),
+    ledger: input.ledger,
+  };
+  if (input.nextDueAt !== undefined) {
+    decision.nextDueAt = input.nextDueAt;
+  }
+  return Object.freeze(decision);
+}
+
+/** The earliest of a set of instants, or `undefined` when there are none. */
+function earliest(instants: ReadonlyArray<string>): string | undefined {
+  return instants.slice().sort()[0];
 }
 
 function requireProgram(input: PlanEvaluationInput): ReviewProgram {
@@ -582,12 +587,7 @@ function buildPlanTrigger(program: ReviewProgram, winner: TriggerCandidate): Pla
  */
 function buildCohortSelection(cohort: SyntheticCohort, ceiling: number): CohortSelection {
   const membership = cohort.membership;
-  const declaredIdentityCount =
-    membership.kind === 'explicit'
-      ? membership.identityIds.length
-      : membership.kind === 'sizeTarget'
-        ? membership.targetSize
-        : null;
+  const declaredIdentityCount = declaredSize(membership);
   const plannedIdentities = Math.min(declaredIdentityCount ?? ceiling, ceiling);
   return Object.freeze({
     cohortId: cohort.id,
@@ -607,6 +607,20 @@ function buildCohortSelection(cohort: SyntheticCohort, ceiling: number): CohortS
  * carries the global ceiling and records that the runtime narrows it
  * per identity.
  */
+/**
+ * The identity count a membership rule *declares*, or `null` when it
+ * declares none.
+ */
+function declaredSize(membership: CohortMembershipIntent): number | null {
+  if (membership.kind === 'explicit') {
+    return membership.identityIds.length;
+  }
+  if (membership.kind === 'sizeTarget') {
+    return membership.targetSize;
+  }
+  return null;
+}
+
 function buildAuthorityEnvelope(
   environment: Environment,
   authorityRefs: ReadonlyArray<AuthorityRef>,

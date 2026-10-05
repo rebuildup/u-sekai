@@ -19,7 +19,7 @@
  *
  * ## A transition is *within one environment*
  *
- * `assertVersionLineage` requires `previous.environmentId ===
+ * `resolveVersionLineage` requires `previous.environmentId ===
  * current.environmentId`. ADR-0011's release transition is "a persistent
  * cohort experiences an earlier version and then a newer version" — the
  * experiment is a single environment promoted, so that memory, habits,
@@ -168,37 +168,4 @@ export function resolveVersionLineage(
     return { ok: false, gap: 'not-advanced-in-time' };
   }
   return { ok: true, lineage: Object.freeze({ previous, current }) };
-}
-
-/**
- * Assert a lineage explicitly. Used on the path where a caller already
- * holds a `previous`/`current` pair rather than an observation list.
- */
-export function assertVersionLineage(
-  previous: EnvironmentObservation,
-  current: EnvironmentObservation,
-  field = 'lineage',
-): VersionLineage {
-  if (previous.environmentId !== current.environmentId) {
-    throw new ProgramPlanningError(
-      `${field}.previous and ${field}.current must observe the same environment`,
-      field,
-      { gap: 'environment-mismatch', previous: previous.environmentId, current: current.environmentId },
-    );
-  }
-  if (previous.version === current.version) {
-    throw new ProgramPlanningError(
-      `${field}.previous and ${field}.current must differ in version`,
-      field,
-      { gap: 'same-version', version: current.version },
-    );
-  }
-  if (Date.parse(previous.observedAt) >= Date.parse(current.observedAt)) {
-    throw new ProgramPlanningError(
-      `${field}.current.observedAt must be strictly after ${field}.previous.observedAt`,
-      field,
-      { gap: 'not-advanced-in-time' },
-    );
-  }
-  return Object.freeze({ previous, current });
 }

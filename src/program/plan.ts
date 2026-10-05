@@ -45,7 +45,6 @@ import {
   ReviewProgramId,
   ReviewTriggerKind,
   StateRetention,
-  targetKey,
 } from '../product/index.js';
 import { ProgramPlanningError } from './errors.js';
 import { AuthorityRef, IdempotencyKey, PlanKey, TriggerDeliveryId } from './ids.js';
@@ -246,15 +245,4 @@ export function buildEvaluationPlan(init: EvaluationPlanInit): EvaluationPlan {
     plan.observedVersion = init.observedVersion;
   }
   return Object.freeze(plan);
-}
-
-/** The durable target key, joined with #57's `targetKey`. */
-export function planTargetKey(plan: EvaluationPlan): string {
-  return targetKey(plan.target);
-}
-
-/** Total order on plan keys, for stable reporting of a batch of plans. */
-export function comparePlanKeys(a: EvaluationPlan, b: EvaluationPlan): number {
-  if (a.planKey === b.planKey) return 0;
-  return a.planKey < b.planKey ? -1 : 1;
 }

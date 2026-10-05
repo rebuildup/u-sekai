@@ -136,7 +136,7 @@ function requireHandle(
   if (typeof value !== 'string') {
     throw new ProgramPlanningError(`${field} must be a string`, field, {
       typeName,
-      received: value === null ? 'null' : Array.isArray(value) ? 'array' : typeof value,
+      received: describeReceived(value),
     });
   }
   if (value.length === 0 || value.length > MAX_HANDLE_LENGTH) {
@@ -153,6 +153,12 @@ function requireHandle(
     });
   }
   return value;
+}
+
+function describeReceived(value: unknown): string {
+  if (value === null) return 'null';
+  if (Array.isArray(value)) return 'array';
+  return typeof value;
 }
 
 /**
