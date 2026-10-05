@@ -1,6 +1,7 @@
 name: Browser smoke
 
-# Real-browser release gate for every release line.
+# Real-browser release gate for every release line, and for every pull
+# request into this repository.
 #
 # `ci.yml` stays the fast, deterministic, HTTP-only gate. This workflow
 # is the parallel browser gate: it installs Chromium, runs the browser
@@ -16,11 +17,38 @@ name: Browser smoke
 # No secrets are required or used: the reasoner is the deterministic
 # scripted provider and the target is the in-repo demo server.
 
+# Trigger surface, and why it matches `ci.yml`.
+#
+# `pull_request` carries NO `branches` filter, for the same reason `ci.yml`
+# does not: this repository stacks ticket PRs on predecessor ticket branches,
+# and a base of `57` matches neither `release-*` nor anything else a
+# release-line allow-list would name. The two workflows have been kept in
+# lockstep since 7b13a6b ("run browser smoke on every release line"), and
+# ADR-0009's decision to keep this gate a *separate workflow* is about job
+# composition - ci.yml must not depend on a browser download - not about
+# giving the two gates different trigger scope.
+#
+# On the "this will turn currently-quiet PRs red for an environment reason"
+# concern: it will not, and the reason matters. The fail-closed browser
+# profile is a guard against a *false green*, not a source of environment
+# noise. This workflow installs the runtime itself
+# (`npx playwright install --with-deps chromium`) and preflights the launch,
+# on a homogeneous GitHub-hosted runner, with no per-branch variation - the
+# same install that produces a green `chromium end-to-end smoke` on every
+# release pull request today. The only way this job goes red on a ticket
+# branch is if the change actually broke the browser path, which is the
+# signal the gate exists to produce. See ADR-0009: "The gate installs the
+# browser explicitly ... A missing or unlaunchable browser fails the job."
+#
+# If the project lead would rather keep the browser gate release-line-only,
+# re-adding `branches: [release-*]` under `pull_request` is a self-contained
+# revert that does not affect the `ci.yml` fix. `test/unit/ci-trigger-coverage.test.ts`
+# pins the trigger this workflow is expected to have, so that revert is a
+# deliberate, visible edit rather than a silent one.
 on:
   push:
     branches: [release-*]
   pull_request:
-    branches: [release-*]
 
 permissions:
   contents: read
