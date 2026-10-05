@@ -1,10 +1,36 @@
 name: CI
 
+# Trigger surface, and why it looks like this.
+#
+# `pull_request` carries NO `branches` filter on purpose. GitHub evaluates
+# `pull_request.branches` against the PR's *base* branch, and this repository
+# stacks ticket PRs on their immediate predecessor ticket branch (CLAUDE.md
+# section 6: "Same-release linear hard dependencies may use the immediate
+# predecessor ticket branch as PR base"). A base of `57` matches neither
+# `release-*` nor `main`, so an allow-list here made every stacked PR in the
+# 0.4.0 wave structurally ungated - not flaky, never triggered. Issue #82.
+#
+# An allow-list here is only safe if its shape provably tracks the branch
+# policy. It did not, and the failure mode was invisible: a PR missing its
+# gate looks exactly like a PR whose gate has not finished. Any future
+# filter must be paired with a machine check, which is why
+# `test/unit/ci-trigger-coverage.test.ts` exists and asserts the ticket-branch
+# base is covered.
+#
+# The `push` filter is deliberately kept, and keeps its original semantics:
+# the release-line push run is the release gate, and the merge-time required
+# status check on `main` (DEFAULT_REQUIRED_RELEASE_CHECKS in
+# scripts/release-rules.mjs) depends on this job's name. A ticket branch
+# always carries a pull request, so its gate comes from the `pull_request`
+# trigger above and a push trigger would only duplicate it once per commit.
+#
+# Cost note: this repository is public, so GitHub-hosted standard runners are
+# free. The real cost of a wider trigger is runner concurrency, not minutes.
+# That calculus changes if the repository is ever made private.
 on:
   push:
     branches: [release-*, main]
   pull_request:
-    branches: [release-*, main]
 
 permissions:
   contents: read
