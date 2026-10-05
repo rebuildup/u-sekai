@@ -143,8 +143,15 @@ export function parseEvidenceRefs(input: unknown, field = 'evidenceRefs'): Reado
 /**
  * Assert that a citation list actually backs a claim.
  *
- * Separate from `parseEvidenceRefs` so the same rule can be applied to
- * a `SetupFailure`'s diagnostics and a `Verification`'s own evidence.
+ * Applied to `Finding.evidenceRefs` and `SetupFailure.evidenceRefs`: in
+ * both, the claim is the thing being asserted, and a list with nothing
+ * supporting it is not evidence-backed in any useful sense.
+ *
+ * Deliberately *not* applied to `Verification.evidenceRefs`. A
+ * verification pass is evidence about the finding, and a pass that
+ * refuted the finding cites `contradicts` by definition — requiring a
+ * `supports` reference there would reject exactly the verification that
+ * #64's false-positive rate most needs to see.
  */
 export function assertSupportsClaim(refs: ReadonlyArray<EvidenceRef>, field: string): void {
   if (!refs.some((ref) => ref.stance === 'supports')) {

@@ -356,12 +356,21 @@ export function parseFinding(input: unknown, field = 'finding'): Finding {
       { verificationOutcome: verification.outcome },
     );
   }
-  if (verification?.outcome === 'refuted' && reproduction.status === 'reproduced') {
-    throw new ReviewContractError(
-      `${field}: a finding cannot be both "reproduced" and refuted by its own verification`,
-      `${field}.reproduction.status`,
-      { verificationOutcome: verification.outcome },
-    );
+  if (verification !== undefined && reproduction.status === 'reproduced') {
+    // A verification cannot both confirm a reproduction and record that
+    // the claim was refuted or that no pass ran at all. `inconclusive`
+    // is deliberately allowed: the participant's own reproduction and an
+    // independent pass that could not settle it are compatible, and
+    // #64 counts exactly that case as a verification that did not
+    // survive.
+    if (verification.outcome === 'refuted' || verification.outcome === 'notRun') {
+      throw new ReviewContractError(
+        `${field}: a finding cannot be "reproduced" while its own verification reports ` +
+          `"${verification.outcome}"`,
+        `${field}.reproduction.status`,
+        { verificationOutcome: verification.outcome },
+      );
+    }
   }
 
   const result: { -readonly [K in keyof Finding]: Finding[K] } = {
@@ -589,6 +598,7 @@ export function parseSetupFailure(input: unknown, field = 'setupFailure'): Setup
   rejectUnknownKeys(raw, SETUP_FAILURE_FIELDS, field);
 
   const evidenceRefs = parseEvidenceRefs(raw['evidenceRefs'], `${field}.evidenceRefs`);
+  assertSupportsClaim(evidenceRefs, `${field}.evidenceRefs`);
 
   const result: { -readonly [K in keyof SetupFailure]: SetupFailure[K] } = {
     outcome: 'setupFailure',

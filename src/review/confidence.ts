@@ -217,23 +217,15 @@ export function parseCalibrationClaim(
 }
 
 /**
- * Rank a basis for ordering/comparison without collapsing it into a
- * number on the finding itself.
+ * Rank a basis for ordering, weak → strong.
  *
  * `docs/product/kpis.md` wants a *verification survival rate*, not a
- * confidence score. This index exists so a caller can sort or filter
- * by basis explicitly, and the `RankedConfidence` wrapper keeps the
- * derived number from being mistaken for a stored field.
+ * confidence score, and lists a universal scalar as an anti-metric. A
+ * rank is provided for sorting and filtering a list a caller is already
+ * looking at; it is deliberately not stored on `Confidence`, not
+ * exported from `src/review/index.ts`, and not aggregated anywhere in
+ * this layer.
  */
 export function rankBasis(basis: ConfidenceBasis): number {
   return CONFIDENCE_BASES.indexOf(basis);
-}
-
-export interface RankedConfidence {
-  readonly confidence: Confidence;
-  readonly basisRank: number;
-}
-
-export function rankConfidence(confidence: Confidence): RankedConfidence {
-  return Object.freeze({ confidence, basisRank: rankBasis(confidence.basis) });
 }

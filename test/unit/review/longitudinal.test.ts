@@ -154,6 +154,25 @@ describe('a comparative claim requires a joinable baseline', () => {
     ).toThrow(/must not be after observed.startedAt/);
   });
 
+  it('rejects a later baseline even when no comparative claim is made', () => {
+    // A reference to the wrong run is a defect in the reference itself,
+    // not only when a claim is built on top of it.
+    const later = {
+      ...lineageA,
+      runId: 'run-2026-10-09-0001',
+      startedAt: '2026-10-09T00:00:00Z',
+      endedAt: undefined,
+    };
+    expect(() =>
+      parseLongitudinalChange({
+        mode: 'continuous',
+        change: 'unknown',
+        baseline: later,
+        observed: lineageB,
+      }),
+    ).toThrow(/must not be after observed.startedAt/);
+  });
+
   it('rejects a release-transition finding with no baseline at all', () => {
     expect(() =>
       parseLongitudinalChange({

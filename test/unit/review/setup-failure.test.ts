@@ -221,3 +221,43 @@ describe('the two never leak into one another in a parsed record', () => {
     );
   });
 });
+
+describe('a setup failure must cite evidence that supports it', () => {
+  it('rejects a setup failure whose diagnostics all contradict it', () => {
+    expect(() =>
+      parseSetupFailure(
+        setupInput({
+          evidenceRefs: [
+            {
+              id: 'ev-setup-1',
+              channel: 'environmentProbe',
+              stance: 'contradicts',
+              locator: 'runtimeErrors[0]',
+              observedAt: '2026-10-01T00:02:11Z',
+              summary: 'The probe says the environment was reachable.',
+            },
+          ],
+        }),
+      ),
+    ).toThrow(/at least one reference with stance "supports"/);
+  });
+
+  it('rejects a setup failure whose only diagnostic is inconclusive', () => {
+    expect(() =>
+      parseSetupFailure(
+        setupInput({
+          evidenceRefs: [
+            {
+              id: 'ev-setup-1',
+              channel: 'environmentProbe',
+              stance: 'inconclusive',
+              locator: 'runtimeErrors[0]',
+              observedAt: '2026-10-01T00:02:11Z',
+              summary: 'Unclear whether the probe ran.',
+            },
+          ],
+        }),
+      ),
+    ).toThrow(/at least one reference with stance "supports"/);
+  });
+});

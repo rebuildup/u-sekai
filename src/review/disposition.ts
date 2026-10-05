@@ -343,15 +343,23 @@ export function nextDispositionStates(from: DispositionState): ReadonlyArray<Dis
 /**
  * Whether the transition re-records a decision that already exists.
  *
- * #64 uses this to recognise a correction (a new disposition that
- * supersedes an earlier one) as opposed to forward progress, and to
- * test that the history was preserved.
+ * A correction needs a decision on both sides: the prior state must be
+ * one a decision was already recorded in (`decided` or `closed`) and the
+ * next state is `decided` again. `needsHumanResearch -> decided` is
+ * *forward progress* — the research concluded and someone decided — and
+ * is deliberately not counted as a correction, or a finding that took
+ * three rounds of research would look like it was corrected three
+ * times.
+ *
+ * #64 uses this to distinguish a correction (a new disposition that
+ * supersedes an earlier one) from progress, and to test that the history
+ * was preserved rather than overwritten.
  */
 export function isDispositionCorrection(
   from: DispositionState,
   to: DispositionState,
 ): boolean {
-  return to === 'decided' && from !== 'unreviewed';
+  return to === 'decided' && (from === 'decided' || from === 'closed');
 }
 
 /**

@@ -13,6 +13,11 @@
 import { describe, it, expect } from 'vitest';
 import {
   channelsOf,
+  conditionKey,
+  deriveFindingId,
+  findingId,
+  deriveVerificationId,
+  evidenceForChannel,
   contradictingEvidence,
   EVIDENCE_CHANNELS,
   isChannelConflict,
@@ -374,7 +379,23 @@ describe('reproduction and verification', () => {
   it('rejects a finding that is both reproduced and refuted by its own verification', () => {
     expect(() =>
       parseFinding(findingInput({ verification: { ...verification, outcome: 'refuted' } })),
-    ).toThrow(/cannot be both "reproduced" and refuted/);
+    ).toThrow(/cannot be "reproduced" while its own verification reports "refuted"/);
+  });
+
+  it('rejects a reproduction backed by a verification that never ran', () => {
+    expect(() =>
+      parseFinding(findingInput({ verification: { ...verification, outcome: 'notRun' } })),
+    ).toThrow(/cannot be "reproduced" while its own verification reports "notRun"/);
+  });
+
+  it('accepts an inconclusive verification alongside a reproduction', () => {
+    // The participant reproduced it; an independent pass could not
+    // settle it. #64 counts that as a verification that did not survive,
+    // so it must be representable.
+    const f = parseFinding(
+      findingInput({ verification: { ...verification, outcome: 'inconclusive' } }),
+    );
+    expect(f.verification?.outcome).toBe('inconclusive');
   });
 
   it('rejects a verification that carries no evidence of its own', () => {
@@ -406,5 +427,61 @@ describe('type guards', () => {
     expect(isFinding({ outcome: 'setupFailure' })).toBe(false);
     expect(isFinding(null)).toBe(false);
     expect(isFinding('fnd-1')).toBe(false);
+  });
+});
+
+describe('helpers downstream tickets will build on', () => {
+  it('groups conditions by a stable key regardless of input order', () => {
+    const a = conditionKey([
+      { dimension: 'flow', value: 'task/create' },
+      { dimension: 'capability', value: 'memory=limitedRecent' },
+    ]);
+    const b = conditionKey([
+      { dimension: 'capability', value: 'memory=limitedRecent' },
+      { dimension: 'flow', value: 'task/create' },
+    ]);
+    expect(a).toBe(b);
+    expect(a).toBe(conditionKey(conditions));
+  });
+
+  it('separates a different condition set into a different key', () => {
+    expect(conditionKey(conditions)).not.toBe(
+      conditionKey([{ dimension: 'flow', value: 'task/delete' }]),
+    );
+  });
+
+  it('reports evidence for one channel without aggregating across channels', () => {
+    const f = parseFinding(
+      findingInput({ evidenceRefs: [evidenceObserver, evidenceDeterministic] }),
+    );
+    expect(evidenceForChannel(f.evidenceRefs, 'observer')).toEqual([evidenceObserver]);
+    expect(evidenceForChannel(f.evidenceRefs, 'deterministicCheck')).toEqual([
+      evidenceDeterministic,
+    ]);
+    expect(evidenceForChannel(f.evidenceRefs, 'productionSignal')).toEqual([]);
+  });
+
+  it('derives a finding id deterministically from a run and an ordinal', () => {
+    expect(deriveFindingId('run-2026-10-01-0001', 1)).toBe(
+      deriveFindingId('run-2026-10-01-0001', 1),
+    );
+    expect(deriveFindingId('run-2026-10-01-0001', 1)).not.toBe(
+      deriveFindingId('run-2026-10-01-0001', 2),
+    );
+    expect(deriveFindingId('run-2026-10-01-0001', 1)).not.toBe(
+      deriveFindingId('run-2026-10-01-0002', 1),
+    );
+  });
+
+  it('rejects a derivation ordinal that is not a positive integer', () => {
+    expect(() => deriveFindingId('run-2026-10-01-0001', 0)).toThrow(/ordinal/);
+    expect(() => deriveFindingId('run-2026-10-01-0001', 1.5)).toThrow(/ordinal/);
+  });
+
+  it('derives a verification id per pass over the same finding', () => {
+    const first = deriveVerificationId(findingId('fnd-0000abcd'), 1);
+    const second = deriveVerificationId(findingId('fnd-0000abcd'), 2);
+    expect(deriveVerificationId(findingId('fnd-0000abcd'), 1)).toBe(first);
+    expect(second).not.toBe(first);
   });
 });

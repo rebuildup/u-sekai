@@ -80,7 +80,20 @@ describe('the transition table is total and closed', () => {
     expect(isLegalDispositionTransition('decided', 'decided')).toBe(true);
     expect(isDispositionCorrection('decided', 'decided')).toBe(true);
     expect(isDispositionCorrection('closed', 'decided')).toBe(true);
+  });
+
+  it('does not call reaching a decision for the first time a correction', () => {
+    // Three rounds of research then a decision is one decision, not
+    // three corrections. Counting it as a correction would make a
+    // slowly-reviewed finding look repeatedly reversed.
     expect(isDispositionCorrection('unreviewed', 'decided')).toBe(false);
+    expect(isDispositionCorrection('needsHumanResearch', 'decided')).toBe(false);
+    expect(isLegalDispositionTransition('needsHumanResearch', 'decided')).toBe(true);
+  });
+
+  it('does not call escalation to research a correction', () => {
+    expect(isDispositionCorrection('decided', 'needsHumanResearch')).toBe(false);
+    expect(isDispositionCorrection('unreviewed', 'needsHumanResearch')).toBe(false);
   });
 
   it('allows a closed decision to be reopened', () => {

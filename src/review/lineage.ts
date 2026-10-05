@@ -104,13 +104,47 @@ export function resolveDispositionLineage(
 ): FindingLineage {
   const finding = findFinding(findings, disposition.findingId);
   if (finding === null) {
-    throw new ReviewContractError(
-      `disposition ${disposition.id} refers to finding ${disposition.findingId}, which is not ` +
-        `present; a disposition may not be aggregated without the finding it judged`,
-      'disposition.findingId',
-      { dispositionId: disposition.id, findingId: disposition.findingId },
-    );
+    throw missingFinding(disposition);
   }
+  return buildLineage(disposition, finding);
+}
+
+/**
+ * Resolve every disposition, in input order.
+ *
+ * Fails on the first unresolvable disposition rather than skipping it:
+ * a partially resolved lineage list is the shape of a report that
+ * under-counts, and a KPI that quietly shrinks its denominator is
+ * worse than one that fails loudly.
+ *
+ * Indexed once rather than rescanned per disposition — #64 replays a
+ * whole ledger against a whole finding set, and a linear scan per
+ * disposition makes that quadratic.
+ */
+export function resolveAllDispositionLineages(
+  dispositions: ReadonlyArray<Disposition>,
+  findings: ReadonlyArray<Finding>,
+): ReadonlyArray<FindingLineage> {
+  const index = indexFindings(findings);
+  return Object.freeze(
+    dispositions.map((disposition) => {
+      const finding = index.get(disposition.findingId);
+      if (finding === undefined) throw missingFinding(disposition);
+      return buildLineage(disposition, finding);
+    }),
+  );
+}
+
+function missingFinding(disposition: Disposition): ReviewContractError {
+  return new ReviewContractError(
+    `disposition ${disposition.id} refers to finding ${disposition.findingId}, which is not ` +
+      `present; a disposition may not be aggregated without the finding it judged`,
+    'disposition.findingId',
+    { dispositionId: disposition.id, findingId: disposition.findingId },
+  );
+}
+
+function buildLineage(disposition: Disposition, finding: Finding): FindingLineage {
   return Object.freeze({
     dispositionId: disposition.id,
     finding,
@@ -124,21 +158,4 @@ export function resolveDispositionLineage(
     longitudinal: finding.longitudinal,
     isDecision: isCustomerDecision(disposition),
   });
-}
-
-/**
- * Resolve every disposition, in input order.
- *
- * Fails on the first unresolvable disposition rather than skipping it:
- * a partially resolved lineage list is the shape of a report that
- * under-counts, and a KPI that quietly shrinks its denominator is
- * worse than one that fails loudly.
- */
-export function resolveAllDispositionLineages(
-  dispositions: ReadonlyArray<Disposition>,
-  findings: ReadonlyArray<Finding>,
-): ReadonlyArray<FindingLineage> {
-  return Object.freeze(
-    dispositions.map((d) => resolveDispositionLineage(d, findings)),
-  );
 }

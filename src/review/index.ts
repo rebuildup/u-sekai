@@ -119,14 +119,12 @@ export {
   parseConfidence,
   parseConfidenceProvenance,
   rankBasis,
-  rankConfidence,
   type CalibrationClaim,
   type Confidence,
   type ConfidenceBasis,
   type ConfidenceLevel,
   type ConfidenceProvenance,
   type ConfidenceSource,
-  type RankedConfidence,
 } from './confidence.js';
 
 export {

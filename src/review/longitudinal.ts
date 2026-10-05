@@ -168,13 +168,18 @@ export function parseLongitudinalChange(
         { change, baselineRunId: baseline.runId, observedRunId: observed.runId },
       );
     }
-    if (Date.parse(baseline.startedAt) > Date.parse(observed.startedAt)) {
-      throw new ReviewContractError(
-        `${field}.baseline.startedAt must not be after observed.startedAt`,
-        `${field}.baseline.startedAt`,
-        { baseline: baseline.startedAt, observed: observed.startedAt },
-      );
-    }
+  }
+
+  // A baseline is by definition the earlier observation, so a later one
+  // is wrong whether or not a comparative claim was made. Checked
+  // whenever a baseline exists rather than only under a claim, because
+  // a reference to the wrong run is a defect in the reference itself.
+  if (baseline !== null && Date.parse(baseline.startedAt) > Date.parse(observed.startedAt)) {
+    throw new ReviewContractError(
+      `${field}.baseline.startedAt must not be after observed.startedAt`,
+      `${field}.baseline.startedAt`,
+      { baseline: baseline.startedAt, observed: observed.startedAt },
+    );
   }
 
   let relatedFindingIds: ReadonlyArray<FindingId> | undefined;
@@ -214,6 +219,7 @@ export function assertObservedTarget(
   longitudinal: LongitudinalChange,
   target: EvaluationTargetRef,
   field = 'longitudinal.observed',
+  baselineField = 'longitudinal.baseline',
 ): void {
   if (!sameTarget(longitudinal.observed, target)) {
     throw new ReviewContractError(
@@ -233,8 +239,8 @@ export function assertObservedTarget(
   }
   if (longitudinal.baseline !== null && !sameTarget(longitudinal.baseline, target)) {
     throw new ReviewContractError(
-      `${field.replace('observed', 'baseline')} must share the finding's target`,
-      'longitudinal.baseline',
+      `${baselineField} must share the finding's target`,
+      baselineField,
       { findingTarget: targetKey(target) },
     );
   }
