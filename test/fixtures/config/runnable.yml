@@ -1,0 +1,134 @@
+# A configuration that declares everything the schema can express, so the
+# translation from YAML to the durable product model is exercised end to
+# end rather than only on its simplest path.
+#
+# Deliberate content:
+#
+#   * two environments, so `allowedOrigins` has a second origin to carry
+#     and an identity's `permittedOrigins` has something to be a subset
+#     of;
+#   * explicit identities with `stateRef`, because an identity that
+#     retains state must name where that state is and the configuration
+#     layer will not invent a location;
+#   * one cohort per membership kind the schema accepts, including an
+#     explicit one whose members must resolve inside the file;
+#   * a release-transition program binding the same persistent cohort to
+#     two environments, which is the case ADR-0011 names and the reason
+#     `environments:` accepts a list as well as `environment:`;
+#   * a real budget, so the fail-closed default is not what is asserted.
+version: 1
+
+product:
+  id: task-tracker
+  displayName: Task Tracker
+  description: A small task tracker under continuous evaluation.
+  owners:
+    - platform-team
+  labels:
+    - saas
+    - b2b
+
+environments:
+  staging:
+    class: staging
+    url: https://staging.task-tracker.example
+    allowedOrigins:
+      - https://staging.task-tracker.example
+      - https://eu.staging.task-tracker.example
+    deploymentKind: continuous
+    notes: Mirrors production data shape; no real customer records.
+    secrets:
+      accountFactoryToken: ${secret:ACCOUNT_FACTORY_TOKEN}
+      billingSandboxKey: ${secret:BILLING_SANDBOX_KEY}
+    world:
+      accounts:
+        provider: http
+        endpoint: https://staging.task-tracker.example/test-support/users
+        secret: accountFactoryToken
+      email:
+        provider: test-inbox
+      billing:
+        provider: stripe
+        mode: test
+        secret: billingSandboxKey
+    authority:
+      destructiveActions: false
+      externalCommunication: false
+      crossOriginAccess: false
+
+  pre-release:
+    class: preRelease
+    url: https://prerelease.task-tracker.example
+    deploymentKind: versioned
+    world:
+      accounts:
+        provider: http
+        endpoint: https://prerelease.task-tracker.example/test-support/users
+
+identities:
+  avery:
+    lifecycle: persistent
+    persona: A long-time user who upgrades every release and rarely re-reads the changelog.
+    displayName: Avery
+    stateRef: identity/avery
+    stateRetention: durable
+    maxConcurrentSessions: 2
+    permittedOrigins:
+      - https://staging.task-tracker.example
+      - https://prerelease.task-tracker.example
+
+  blake:
+    lifecycle: release
+    persona: A user who signed up during a trial and is deciding whether to keep using the product.
+    displayName: Blake
+    stateRef: identity/blake
+    stateRetention: session
+
+  casey:
+    lifecycle: ephemeral
+    persona: A first-time visitor who arrived from a search result and has never seen the product.
+
+cohorts:
+  first-time-visitors:
+    lifecycle: ephemeral
+
+  trial-users:
+    lifecycle: release
+    size: 25
+
+  long-time-users:
+    lifecycle: persistent
+    members:
+      - avery
+      - blake
+    notes: The cohort that observes a release transition.
+
+reviewPrograms:
+  release-transition:
+    environments:
+      - staging
+      - pre-release
+    cohort: long-time-users
+    trigger:
+      manual: true
+    budget:
+      maxRunsPerDay: 40
+      maxRunsPerEvent: 4
+      maxCostUnitsPerDay: 250
+    notes: Run by hand once the pre-release build is deployed.
+
+  staging-continuous:
+    environments:
+      - staging
+    cohort: trial-users
+    trigger:
+      cadence:
+        everyMinutes: 720
+        timeZone: Asia/Tokyo
+      event:
+        event: deployment.completed
+        debounceMinutes: 15
+    budget:
+      maxRunsPerDay: 96
+      maxRunsPerEvent: 8
+      maxCostUnitsPerDay: 600

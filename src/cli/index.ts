@@ -3,8 +3,22 @@
  *
  *   u-sekai run <experiment.json> [--adapter http|playwright] [--out <dir>] [--demo-server-port N]
  *   u-sekai validate <experiment.json>
+ *   u-sekai config validate [u-sekai.yml]
+ *   u-sekai program run <program-id> [--config u-sekai.yml] [flags]
+ *   u-sekai program status <program-id> [--config u-sekai.yml]
  *   u-sekai --version
  *   u-sekai --help
+ *
+ * Two surfaces live here, and they are deliberately kept apart:
+ *
+ * - **experiment surface** (`run`, `validate`) — the pre-0.4.0 JSON
+ *   `ExperimentDefinition` path, unchanged. It is preserved verbatim so
+ *   an existing script keeps working; see `runExperimentCommand`.
+ * - **program surface** (`config`, `program`) — the Continuous Product
+ *   Evaluation path (issue #65). It is configuration-centric: the
+ *   `u-sekai.yml` authority file from #58 decides *what* may be run and
+ *   *under which authority*, and #62/#63 decide whether and how it runs.
+ *   See `program-command.ts`.
  *
  * Exit codes:
  *   0 success — every participant reached a legitimate terminal state
@@ -12,6 +26,11 @@
  *   2 runtime error (adapter / reasoner), including a participant that
  *     terminated for any reason other than a clean finish
  *   3 capability violation during a participant run
+ *
+ * The program surface reuses 1/2 and adds 4 (setup refused) and 5
+ * (product findings were reported). It never reuses 3, because a
+ * program run reports a capability violation as a setup failure — see
+ * `program-command.ts` for why the two are not interchangeable.
  */
 
 import { promises as fs } from 'node:fs';
@@ -28,15 +47,63 @@ import { startServer } from '../demo/environment/server.js';
 import { AdapterError } from '../domain/errors.js';
 import { fileURLToPath } from 'node:url';
 import { VERSION } from '../version.js';
+import { runProgramSurface } from './program-command.js';
+import type { ConfigSubcommand, ProgramSubcommand } from './program-command.js';
+
+/**
+ * Top-level verbs.
+ *
+ * `run` / `validate` are the pre-0.4.0 experiment surface and keep their
+ * meaning. `config` / `program` are the Continuous Product Evaluation
+ * surface from #65 and take a subcommand, which is why the union below
+ * carries a second member rather than a flat `config-validate` verb: the
+ * issue's required UX is `u-sekai config validate` and
+ * `u-sekai program run|status`, and a flat spelling would make
+ * `u-sekai program` on its own an unrecognised word instead of a command
+ * with a missing subcommand.
+ */
+type TopLevelCommand = 'run' | 'validate' | 'config' | 'program' | 'help' | 'version';
+
+const TOP_LEVEL_COMMANDS: ReadonlyArray<TopLevelCommand> = [
+  'run',
+  'validate',
+  'config',
+  'program',
+  'help',
+  'version',
+];
+
+/**
+ * Narrow a bare word to a top-level verb.
+ *
+ * A type predicate rather than a cast, so a verb added to the union
+ * without a branch at the dispatch site in `main` is caught by
+ * `tsc` rather than falling through to a generic message.
+ */
+function isTopLevelCommand(value: string): value is TopLevelCommand {
+  return (TOP_LEVEL_COMMANDS as ReadonlyArray<string>).includes(value);
+}
+
+/** Narrow a bare word to the subcommand of `command`, if it has one. */
+function isSubcommandOf(
+  command: TopLevelCommand,
+  value: string,
+): value is ConfigSubcommand | ProgramSubcommand {
+  if (command === 'config') return (['validate'] as ReadonlyArray<string>).includes(value);
+  if (command === 'program') return (['run', 'status'] as ReadonlyArray<string>).includes(value);
+  return false;
+}
 
 interface ParsedArgs {
-  command: 'run' | 'validate' | 'help' | 'version' | null;
+  command: TopLevelCommand | null;
+  /** The verb under `config` / `program`. Absent for the flat surface. */
+  subcommand: ConfigSubcommand | ProgramSubcommand | null;
   positional: string[];
   flags: Record<string, string>;
 }
 
 function parseArgs(argv: ReadonlyArray<string>): ParsedArgs {
-  const out: ParsedArgs = { command: null, positional: [], flags: {} };
+  const out: ParsedArgs = { command: null, subcommand: null, positional: [], flags: {} };
   let i = 0;
   while (i < argv.length) {
     const a = argv[i];
@@ -56,11 +123,15 @@ function parseArgs(argv: ReadonlyArray<string>): ParsedArgs {
       continue;
     }
     if (out.command === null) {
-      if (a === 'run' || a === 'validate') {
+      if (isTopLevelCommand(a)) {
         out.command = a;
         i += 1;
         continue;
       }
+    } else if (out.subcommand === null && isSubcommandOf(out.command, a)) {
+      out.subcommand = a;
+      i += 1;
+      continue;
     }
     out.positional.push(a);
     i += 1;
@@ -72,10 +143,43 @@ function printUsage(): void {
   process.stdout.write(`u-sekai ${VERSION}
 
 Usage:
-  u-sekai run <experiment.json> [flags]
+  u-sekai config validate [u-sekai.yml]     Check the authority file.
+  u-sekai program run <program-id> [flags]  Run a Review Program once, locally.
+  u-sekai program status <program-id>       Show what the durable store holds.
+
+  u-sekai run <experiment.json> [flags]     Experiment surface (pre-0.4.0).
   u-sekai validate <experiment.json>
   u-sekai --version
   u-sekai --help
+
+Continuous Product Evaluation:
+  The program surface is configured by u-sekai.yml, which is the only
+  authority surface: no flag here can widen what that file grants. The
+  file is read from --config, then USE_SEKAI_CONFIG, then ./u-sekai.yml.
+
+Flags (config validate):
+  --config <path>            Which file to read. Chooses the file; grants nothing.
+
+Flags (program run):
+  --config <path>            Which u-sekai.yml to read. Chooses the file only.
+  --adapter http|playwright  Browser adapter. Default: http.
+  --reasoner <provider>      scripted (CI) or anthropic (live, needs ANTHROPIC_API_KEY).
+  --observer-reasoner <prov> Observer reasoner provider.
+  --task <text>              What the Synthetic Identities are asked to attempt.
+  --max-steps <n>            Step ceiling per identity. Default: 6.
+  --seed <text>              Deterministic seed. Default: derived from the program.
+  --state-dir <dir>          Durable identity/cohort store. Default: .u-sekai-state.
+  --out <dir>                Artifact root. Default: <state-dir>/artifacts.
+  --max-identities <n>       Cap on identities this one command may plan. Only ever
+                             lowers the cohort's own declared membership; raising a
+                             plan past it is what editing u-sekai.yml is for.
+  --version-label <text>     The version the environment is observed at. Required:
+                             a run must not invent one (it would poison the next
+                             release-transition join).
+  --dry-run                  Plan and print, without dispatching a participant.
+
+  Every flag here chooses a file, a store, a provider or a cap. None of
+  them can widen what u-sekai.yml grants.
 
 Flags (run):
   --adapter http|playwright   Browser adapter to use. Default: http.
@@ -85,6 +189,14 @@ Flags (run):
                               Useful values: scripted (CI), anthropic (live, needs
                               ANTHROPIC_API_KEY).
   --observer-reasoner <prov>  Override the observer reasoner provider.
+
+Exit codes:
+  0  success
+  1  validation / configuration error
+  2  runtime error (adapter / reasoner / store)
+  3  capability violation during a participant run (experiment surface)
+  4  setup refused: the run observed nothing (program surface)
+  5  the run completed and reported product findings (program surface)
 `);
 }
 
@@ -189,6 +301,22 @@ async function main(): Promise<number> {
     process.stderr.write('u-sekai: missing command. Use --help.\n');
     return 1;
   }
+
+  // The Continuous Product Evaluation surface. Routed before the
+  // experiment surface so a nested command is never read as an
+  // experiment path: `program run` has a `run` in it, and the flat
+  // branch below would otherwise claim the word. The narrowing is a
+  // type predicate rather than a cast, so this surface cannot be handed
+  // a `command` it does not dispatch.
+  if (args.command === 'config' || args.command === 'program') {
+    return runProgramSurface({
+      command: args.command,
+      subcommand: args.subcommand,
+      positional: args.positional,
+      flags: args.flags,
+    });
+  }
+
   const target = args.positional[0];
   if (!target) {
     process.stderr.write(`u-sekai: ${args.command}: missing experiment file.\n`);
