@@ -18,7 +18,7 @@
 
 import { UseSekaiConfigError } from './errors.js';
 
-export function isRecord(value: unknown): value is Record<string, unknown> {
+function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
@@ -72,7 +72,7 @@ export function rejectUnknownKeys(
   }
 }
 
-export function requireString(value: unknown, field: string, maxLength = 500): string {
+function requireString(value: unknown, field: string, maxLength = 500): string {
   if (typeof value !== 'string') {
     throw new UseSekaiConfigError(`${field} must be a string`, field, {
       reason: 'wrong_type',
@@ -163,7 +163,7 @@ export function requireOneOf<T extends string>(
   return value as T;
 }
 
-export function requireSequence(value: unknown, field: string): unknown[] {
+function requireSequence(value: unknown, field: string): unknown[] {
   if (!Array.isArray(value)) {
     throw new UseSekaiConfigError(`${field} must be a list`, field, {
       reason: 'wrong_type',

@@ -33,6 +33,7 @@
  */
 
 import { UseSekaiConfigError } from './errors.js';
+import { requireMapping } from './validate.js';
 
 /** The one supported reference form, e.g. `${secret:ACCOUNT_FACTORY_TOKEN}`. */
 const SECRET_REFERENCE_PATTERN = /^\$\{secret:([A-Z][A-Z0-9_]{0,127})\}$/;
@@ -94,7 +95,7 @@ export function secretReferenceName(reference: string): string {
 }
 
 /** Validate a `secrets:` registry key. */
-export function parseSecretRegistryName(value: unknown, field: string): string {
+function parseSecretRegistryName(value: unknown, field: string): string {
   if (typeof value !== 'string' || !SECRET_NAME_PATTERN.test(value)) {
     throw new UseSekaiConfigError(
       `${field} must be a name of letters, digits and underscores, starting with a letter`,
@@ -108,7 +109,7 @@ export function parseSecretRegistryName(value: unknown, field: string): string {
 /** Read and validate a `secrets:` block into a frozen, ordered list. */
 export function parseSecretRegistry(value: unknown, field: string): ReadonlyArray<DeclaredSecret> {
   if (value === undefined) return Object.freeze([]);
-  const raw = requireMappingShim(value, field);
+  const raw = requireMapping(value, field);
   const declared: DeclaredSecret[] = [];
   const seenReferences = new Set<string>();
 
@@ -138,20 +139,4 @@ export function parseSecretRegistry(value: unknown, field: string): ReadonlyArra
   }
 
   return Object.freeze(declared);
-}
-
-/** Whether the registry declares `name`. Used to reject dangling references. */
-export function hasSecret(secrets: ReadonlyArray<DeclaredSecret>, name: string): boolean {
-  return secrets.some((secret) => secret.name === name);
-}
-
-// Kept local rather than imported so `secrets.ts` has no dependency on
-// the rest of the configuration vocabulary.
-function requireMappingShim(value: unknown, field: string): Record<string, unknown> {
-  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
-    throw new UseSekaiConfigError(`${field} must be a mapping of names to references`, field, {
-      reason: 'wrong_type',
-    });
-  }
-  return value as Record<string, unknown>;
 }

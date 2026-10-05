@@ -11,7 +11,8 @@
  */
 
 import { describe, expect, it } from 'vitest';
-import { parseUseSekaiConfigText } from '../../../src/config/index.js';
+import { ProductDomainError } from '../../../src/product/index.js';
+import { asConfigError, parseUseSekaiConfigText, UseSekaiConfigError } from '../../../src/config/index.js';
 import { buildConfig, configFrom, expectConfigError } from './support.js';
 
 const provenance = { configPath: '/synthetic/u-sekai.yml', configPathSource: 'default' as const };
@@ -658,6 +659,45 @@ describe('nothing is dropped silently', () => {
   it('reports every unknown key at once, not only the first', () => {
     const error = expectConfigError(() => load({ browsers: {}, model: 'x', schedules: {} }));
     expect(error.message).toMatch(/browsers, model, schedules/);
+  });
+});
+
+describe('domain errors surface as configuration errors', () => {
+  // `asConfigError` is what keeps one grammar for the grammars #57 owns.
+  // The conversion has to preserve the domain's field path, or a customer
+  // reading a diagnostic would be sent to a field the file does not have.
+  it('re-throws a domain rejection as a config error carrying the same field', () => {
+    const error = expectConfigError(() =>
+      load({ environments: { develop: { class: 'develop', url: 'https://d.example.com', notes: 42 } } }),
+    );
+    expect(error).toBeInstanceOf(UseSekaiConfigError);
+    // The path is rooted at the file it came from, so a diagnostic both
+    // names the offending key and the file to edit.
+    expect(error.field).toBe('/synthetic/u-sekai.yml.environments.develop.notes');
+    expect(error.message).toMatch(/notes must be a string/);
+  });
+
+  it('keeps the domain error as the cause, so the origin is traceable', () => {
+    const error = expectConfigError(() =>
+      load({ environments: { develop: { class: 'develop', url: 'gopher://d.example.com' } } }),
+    );
+    expect(error.domainCause?.name).toBe('ProductDomainError');
+    expect(error.domainCause).toBeInstanceOf(ProductDomainError);
+  });
+
+  it('does not reclassify an unrelated error as a configuration problem', () => {
+    // The conversion is `instanceof`-based, so a genuine bug in u-sekai
+    // still surfaces as itself rather than as "your file is wrong".
+    let thrown: unknown;
+    try {
+      asConfigError(() => {
+        throw new TypeError('a real bug, not a bad file');
+      }, 'field');
+    } catch (error) {
+      thrown = error;
+    }
+    expect(thrown).toBeInstanceOf(TypeError);
+    expect(thrown).not.toBeInstanceOf(UseSekaiConfigError);
   });
 });
 

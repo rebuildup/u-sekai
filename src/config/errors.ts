@@ -16,6 +16,8 @@
  * regardless of which layer raised it.
  */
 
+import { ProductDomainError } from '../product/errors.js';
+
 /** Prefix identifying a `USE_SEKAI_*` environment variable. */
 export const ENV_VAR_PREFIX = 'USE_SEKAI_';
 
@@ -57,22 +59,24 @@ export class UseSekaiConfigError extends Error {
  * and are deliberately *not* restated here. Duplicating them would let
  * the file accept a URL that the domain then rejects, which is the
  * "looks validated but is not" failure this layer exists to prevent.
+ *
+ * The check is `instanceof` rather than a comparison on `.name`, so that
+ * renaming or subclassing the domain error cannot make this conversion
+ * silently stop working, and so that an unrelated error which happens to
+ * carry the same `name` is not reclassified as a customer-facing
+ * configuration problem.
  */
 export function asConfigError<T>(operation: () => T, fallbackField: string): T {
   try {
     return operation();
   } catch (error) {
     if (error instanceof UseSekaiConfigError) throw error;
-    if (error instanceof Error && error.name === 'ProductDomainError') {
-      const domainError = error as Error & {
-        field?: string;
-        detail?: Record<string, unknown>;
-      };
+    if (error instanceof ProductDomainError) {
       throw new UseSekaiConfigError(
-        domainError.message,
-        domainError.field ?? fallbackField,
-        domainError.detail ?? {},
-        domainError,
+        error.message,
+        error.field ?? fallbackField,
+        error.detail,
+        error,
       );
     }
     throw error;
