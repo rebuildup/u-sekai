@@ -247,7 +247,9 @@ function parseFlowList(raw: string, file: string): string[] {
 function readOnBlock(text: string, file: string): string[] {
   const lines = text.split('\n');
   const onAt = lines.indexOf('on:');
-  expect(onAt, `${file} has no top-level 'on:' key`).toBeGreaterThan(-1);
+  if (onAt === -1) {
+    throw new Error(`${file} has no top-level 'on:' key`);
+  }
   const block: string[] = [];
   for (let index = onAt + 1; index < lines.length; index += 1) {
     const line = lines[index] ?? '';
@@ -268,9 +270,8 @@ function readOnBlock(text: string, file: string): string[] {
  * Throws on a shape it does not model rather than returning a partial
  * answer, so a future edit to a trigger cannot quietly stop being checked.
  */
-function readEventFilters(relativePath: string): Map<string, EventFilter> {
-  const text = readFileSync(path.join(repoRoot, relativePath), 'utf8');
-  const block = readOnBlock(text, relativePath);
+function parseEventFilters(text: string, file: string): Map<string, EventFilter> {
+  const block = readOnBlock(text, file);
   const events = new Map<string, EventFilter>();
   let current: string | null = null;
 
@@ -281,7 +282,7 @@ function readEventFilters(relativePath: string): Map<string, EventFilter> {
     if (indent === 2) {
       const header = /^ {2}([A-Za-z0-9_-]+):\s*(.*)$/.exec(line);
       if (header === null) {
-        throw new Error(`${relativePath}: unparsed event header ${JSON.stringify(line)}`);
+        throw new Error(`${file}: unparsed event header ${JSON.stringify(line)}`);
       }
       current = header[1] ?? '';
       events.set(current, {});
@@ -300,7 +301,7 @@ function readEventFilters(relativePath: string): Map<string, EventFilter> {
     const key = entry[1] === 'branches' ? 'branches' : 'branchesIgnore';
     const filter = events.get(current);
     if (filter === undefined) {
-      throw new Error(`${relativePath}: filter outside a known event in ${JSON.stringify(line)}`);
+      throw new Error(`${file}: filter outside a known event in ${JSON.stringify(line)}`);
     }
 
     let items = (entry[2] ?? '').trim();
@@ -318,7 +319,7 @@ function readEventFilters(relativePath: string): Map<string, EventFilter> {
         cursor += 1;
       }
       if (collected.length === 0) {
-        throw new Error(`${relativePath}: empty filter list in ${JSON.stringify(line)}`);
+        throw new Error(`${file}: empty filter list in ${JSON.stringify(line)}`);
       }
       filter[key] = collected;
       index = cursor - 1;
@@ -326,10 +327,15 @@ function readEventFilters(relativePath: string): Map<string, EventFilter> {
     }
 
     items = items.replace(/\s+#.*$/, '').trim();
-    filter[key] = parseFlowList(items, relativePath);
+    filter[key] = parseFlowList(items, file);
   }
 
   return events;
+}
+
+function readEventFilters(relativePath: string): Map<string, EventFilter> {
+  const text = readFileSync(path.join(repoRoot, relativePath), 'utf8');
+  return parseEventFilters(text, relativePath);
 }
 
 function readWorkflow(relativePath: string): string {
@@ -401,8 +407,73 @@ describe('the pre-fix trigger is detected as ungating', () => {
     expect(eventGates(preFixBrowserSmoke, 'release-0-4-0')).toBe(true);
   });
 
+  it('did not gate a main-based pull request in browser-smoke, either', () => {
+    // `[release-*]` names no `main`, so the browser gate was skipped for
+    // main-based PRs as well. Worth pinning: it shows the allow-list was
+    // never load-bearing, only narrowing.
+    expect(eventGates(preFixBrowserSmoke, 'main')).toBe(false);
+  });
+
   it('treats a missing event as ungated', () => {
     expect(eventGates(undefined, '57')).toBe(false);
+  });
+});
+
+describe('the reader reports the real pre-fix files as ungating', () => {
+  // The literal-only control above would still pass if `parseEventFilters`
+  // regressed to never populating `branches` - `eventGates` would then see
+  // an absent filter, return true for every base, and the guard would pass
+  // vacuously while gating nothing. These cases push the *pre-fix file
+  // text* through the same reader the live assertions use, so a reader that
+  // stops understanding the file fails here instead.
+  //
+  // Verbatim from the pre-fix `on:` blocks (origin/release-0-4-0), trimmed to
+  // the block the reader reads.
+  const PRE_FIX_ON: Record<string, string> = {
+    [CI_WORKFLOW]: [
+      'on:',
+      '  push:',
+      '    branches: [release-*, main]',
+      '  pull_request:',
+      '    branches: [release-*, main]',
+      '',
+      'permissions:',
+      '  contents: read',
+      '',
+    ].join('\n'),
+    [BROWSER_SMOKE_WORKFLOW]: [
+      'on:',
+      '  push:',
+      '    branches: [release-*]',
+      '  pull_request:',
+      '    branches: [release-*]',
+      '',
+      'permissions:',
+      '  contents: read',
+      '',
+    ].join('\n'),
+  };
+
+  it.each(PULL_REQUEST_WORKFLOWS)('%s: the reader recovers the pre-fix filter', (file) => {
+    const filters = parseEventFilters(PRE_FIX_ON[file] ?? "", file);
+    const pullRequest = filters.get('pull_request');
+    expect(pullRequest, `${file}: pre-fix pull_request trigger was not read`).toBeDefined();
+    // Not merely "not undefined": the filter must actually have been read,
+    // otherwise the reader has gone blind and the live assertions vacuously
+    // pass.
+    expect(pullRequest?.branches).toEqual(
+      file === CI_WORKFLOW ? ['release-*', 'main'] : ['release-*'],
+    );
+  });
+
+  it.each(PULL_REQUEST_WORKFLOWS)('%s: the pre-fix filter fails the live assertion', (file) => {
+    const filters = parseEventFilters(PRE_FIX_ON[file] ?? "", file);
+    for (const base of ['57', '1', '1234']) {
+      expect(
+        eventGates(filters.get('pull_request'), base),
+        `${file}: pre-fix trigger unexpectedly gated ${base}, so the guard would not catch a regression`,
+      ).toBe(false);
+    }
   });
 });
 
