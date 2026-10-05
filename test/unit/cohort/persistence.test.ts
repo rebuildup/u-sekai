@@ -143,6 +143,52 @@ describe('the persistence key is stable across releases', () => {
     expect(envelope.revision).toBeGreaterThan(1);
   });
 
+  it('addresses identities of different retention independently', async () => {
+    // #57 narrowed `capability.stateRetention` to a per-lifecycle
+    // literal, so retention varies *within* one product. A key that
+    // folded retention in — or that assumed one retention for the whole
+    // product — would collide or strand state here.
+    const ephemeral = makeIdentity('ephemeral', { id: 'idn-eph' });
+    const session = makeIdentity('release', {
+      id: 'idn-session',
+      stateRef: 'session:state',
+      stateRetention: 'session',
+    });
+    const persistent = makeIdentity('persistent', {
+      id: 'idn-pers',
+      stateRef: 'pers:state',
+    });
+
+    const service = makeService(dir);
+    await service.declareIdentity(ephemeral);
+    await service.declareIdentity(session);
+    await service.declareIdentity(persistent);
+
+    const keys = [ephemeral.id, session.id, persistent.id].map((id) => identityStateKey(id));
+    expect(new Set(keys).size).toBe(3);
+    // Three distinct files, not one record overwritten three times.
+    expect(new Set(keys.map((k) => recordPath(dir, 'identity', k))).size).toBe(3);
+
+    // The key is exactly the kind prefix and the declared id — nothing is
+    // appended, so retention (or anything else per-identity) cannot be
+    // folded into it.
+    expect(keys).toEqual([
+      `identity:${ephemeral.id}`,
+      `identity:${session.id}`,
+      `identity:${persistent.id}`,
+    ]);
+
+    // Each reloads with its own retention.
+    const reloaded = await Promise.all(
+      [ephemeral.id, session.id, persistent.id].map((id) => restart(dir).loadIdentity(id)),
+    );
+    expect(reloaded.map((s) => s.identity.capability.stateRetention)).toEqual([
+      'none',
+      'session',
+      'durable',
+    ]);
+  });
+
   it('carries no run id, timestamp or build identifier in the key', async () => {
     const identity = makeIdentity('persistent', { id: 'idn-pure', stateRef: 'pure:state' });
     await makeService(dir).declareIdentity(identity);

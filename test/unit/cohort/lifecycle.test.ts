@@ -341,6 +341,62 @@ describe('raw secrets are not persistable', () => {
   });
 });
 
+describe('retention is lifecycle-dependent and is treated as such', () => {
+  it('refuses a re-declaration that changes only the retention level', async () => {
+    // A `release` identity may declare `session` or `durable`
+    // (ADR-0011's retention matrix). Re-declaring the same id at the
+    // other level is a retention change, and the retained state already
+    // written under the old level would be stranded by it.
+    const service = makeService(dir);
+    const durable = makeIdentity('release', {
+      id: 'idn-retention',
+      stateRef: 'retention:state',
+      stateRetention: 'durable',
+    });
+    await service.declareIdentity(durable);
+    await service.touch(durable.id, '2026-10-01T00:00:00.000Z');
+    const before = await restart(dir).loadIdentity(durable.id);
+
+    const session = makeIdentity('release', {
+      id: 'idn-retention',
+      stateRef: 'retention:state',
+      stateRetention: 'session',
+    });
+    await expect(service.declareIdentity(session)).rejects.toThrow(
+      /already stored with a different declaration/,
+    );
+
+    const after = await restart(dir).loadIdentity(durable.id);
+    expect(after).toEqual(before);
+    expect(after.identity.capability.stateRetention).toBe('durable');
+    expect(after.retainedState).toBeDefined();
+  });
+
+  it('cannot construct a record whose retention contradicts its lifecycle', () => {
+    // The fixture goes through #57's parser, so an illegal pairing is
+    // refused at the boundary rather than reaching the store.
+    expect(() =>
+      makeIdentity('ephemeral', { id: 'idn-illegal', stateRetention: 'durable' }),
+    ).toThrow();
+    expect(() =>
+      makeIdentity('persistent', { id: 'idn-illegal2', stateRef: 's', stateRetention: 'session' }),
+    ).toThrow();
+  });
+
+  it('holds no state for an identity that retains none', async () => {
+    const ephemeral = makeIdentity('ephemeral', { id: 'idn-nostate' });
+    const service = makeService(dir);
+    const state = await service.declareIdentity(ephemeral);
+
+    expect(state.identity.capability.stateRetention).toBe('none');
+    expect(state.identity.stateRef).toBeUndefined();
+    expect(state.retainedState).toBeUndefined();
+    // And the check survives a reload, not just the write path.
+    const reloaded = await restart(dir).loadIdentity(ephemeral.id);
+    expect(reloaded.retainedState).toBeUndefined();
+  });
+});
+
 describe('version labels', () => {
   it('accepts the spellings deployments actually use', () => {
     for (const v of ['2026.10.1', 'v1.2.3', 'build-1234', 'main+abc.123', 'release_2026-10']) {

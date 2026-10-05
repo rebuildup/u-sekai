@@ -56,20 +56,30 @@ export interface IdentityOptions {
   readonly stateRef?: string;
   readonly permittedOrigins?: ReadonlyArray<string>;
   readonly maxConcurrentSessions?: number;
+  /**
+   * Overrides the default retention for the lifecycle.
+   *
+   * #57's parser is the authority: an illegal pairing (an `ephemeral`
+   * identity that claims `durable`, say) throws here rather than
+   * producing an invalid fixture.
+   */
+  readonly stateRetention?: 'none' | 'session' | 'durable';
 }
 
 /**
  * Build a `SyntheticIdentity` through #57's own parser.
  *
  * Always goes through `parseSyntheticIdentity` so a fixture can never
- * describe an identity #57 would have rejected.
+ * describe an identity #57 would have rejected — and so the builder
+ * keeps working when #57 narrows `capability.stateRetention` to a
+ * per-lifecycle literal.
  */
 export function makeIdentity(
   lifecycle: 'ephemeral' | 'release' | 'persistent',
   options: IdentityOptions = {},
 ): SyntheticIdentity {
   const retention =
-    lifecycle === 'ephemeral' ? 'none' : lifecycle === 'release' ? 'durable' : 'durable';
+    options.stateRetention ?? (lifecycle === 'ephemeral' ? 'none' : 'durable');
   const base: Record<string, unknown> = {
     id: options.id ?? `idn-${lifecycle}-1`,
     productId: PRODUCT_ID,
