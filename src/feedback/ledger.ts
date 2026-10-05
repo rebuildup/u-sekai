@@ -20,11 +20,16 @@
  *
  * Every append returns a **new** `DispositionLedger`. No function in
  * this module mutates an existing one, every array and object is
- * `Object.freeze`d, and the events reachable from a ledger value are
- * the same frozen instances the caller already holds. So
- * "history is not overwritten silently" is checkable as an identity
- * assertion (`before.events[0] === after.events[0]`), not as a code
- * review.
+ * `Object.freeze`d, and two ledgers derived from the same history
+ * share the identical earlier event instances. So "history is not
+ * overwritten silently" is checkable as an identity assertion
+ * (`before.events[0] === after.events[0]`), not as a code review.
+ *
+ * Note what that does *not* claim: a ledger does not hold the very
+ * object a caller passed to `appendDisposition`. The disposition is
+ * re-parsed on the way in, so the stored value is the ledger's own
+ * frozen copy — the caller keeps a reference it cannot use to mutate
+ * the log.
  *
  * ## Order of authority: append order, not `decidedAt`
  *
