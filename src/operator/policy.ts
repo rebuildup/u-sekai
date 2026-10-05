@@ -68,6 +68,7 @@ import {
   optionalString,
   rejectDuplicates,
   rejectUnknownKeys,
+  describeValue,
   requireArray,
   requireFiniteNumber,
   requireInteger,
@@ -387,7 +388,7 @@ function parseOptionalTokens(value: unknown, field: string): ReadonlyArray<strin
 function requireBoolean(value: unknown, field: string): boolean {
   if (typeof value !== 'boolean') {
     throw new OperatorError('invalidRequest', `${field} must be a boolean`, field, {
-      received: value === null ? 'null' : Array.isArray(value) ? 'array' : typeof value,
+      received: describeValue(value),
     });
   }
   return value;

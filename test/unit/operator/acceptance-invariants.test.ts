@@ -35,6 +35,7 @@ import {
   isOperatorProductFailure,
   isOperatorSetupFailure,
   OPERATOR_FAILURE_SUBJECT,
+  OPERATOR_FAILURE_SUBJECTS,
   OPERATOR_PRODUCT_FAILURE_KINDS,
   OPERATOR_SETUP_FAILURE_KINDS,
   OPERATOR_STEP_KINDS,
@@ -322,7 +323,13 @@ describe('setup failure is distinguishable from product outcome', () => {
       expect(OPERATOR_FAILURE_SUBJECT[kind]).toBe('productResponse');
     }
     const all = [...OPERATOR_SETUP_FAILURE_KINDS, ...OPERATOR_PRODUCT_FAILURE_KINDS];
+    // Closed and disjoint: no kind is unlisted, and no kind appears in
+    // both halves of the taxonomy.
     expect(new Set(all).size).toBe(all.length);
+    expect(new Set(OPERATOR_FAILURE_SUBJECTS)).toEqual(new Set(['operatorSetup', 'productResponse']));
+    for (const kind of all) {
+      expect(OPERATOR_FAILURE_SUBJECTS).toContain(OPERATOR_FAILURE_SUBJECT[kind]);
+    }
   });
 
   it('keeps the two failure shapes structurally non-assignable', () => {

@@ -217,11 +217,6 @@ const STEP_FIELDS: Readonly<Record<OperatorStepKind, readonly string[]>> = Objec
   'billing.realCharge': ['kind', 'resourceKey', 'origin', 'identityId', 'amountUnits'],
 });
 
-/** Whether a step consumes `identityId`. Used by the plan validator and by tests. */
-export function stepIdentityId(step: OperatorStep): SyntheticIdentityId | null {
-  return 'identityId' in step ? step.identityId : null;
-}
-
 /** Whether a step produces a durable resource that compensation must release. */
 export function stepProducesResource(step: OperatorStep): boolean {
   return step.kind !== 'inbox.read';
@@ -293,7 +288,11 @@ export function parseOperatorStep(input: unknown, field = 'step'): OperatorStep 
         resourceKey,
         origin,
         identityId: parseSyntheticIdentityId(raw['identityId'], `${field}.identityId`),
-        amountUnits: requireFiniteNumber(raw['amountUnits'], `${field}.amountUnits`, 0),
+        // Bounded at the declaration, not only by the daily budget: a
+        // real-money amount with no parse-time ceiling would depend
+        // entirely on a policy that happens to be configured, which is
+        // the wrong place for the only hard limit on spending.
+        amountUnits: requireFiniteNumber(raw['amountUnits'], `${field}.amountUnits`, 0, MAX_BILLING_UNITS),
       });
   }
 }

@@ -56,11 +56,17 @@ import {
   findEnvironmentGrant,
   type OperatorAuthorityRef,
 } from './authority.js';
-import { parseResourceHandle, type ProvisioningConnector, type ResourceHandle } from './connector.js';
+import {
+  parseResourceHandle,
+  type ConnectorOutcome,
+  type ProvisioningConnector,
+  type ResourceHandle,
+} from './connector.js';
 import { OperatorError, type OperatorProductFailure, type OperatorSetupFailure } from './errors.js';
 import type { OperatorAuditRecord } from './evidence.js';
 import { parseOperatorAuthorityPolicy, type OperatorAuthorityPolicy } from './policy.js';
 import {
+  lineageProgramKey,
   parseOperatorLineage,
   parseProvisionRequest,
   parseProvisionRequestId,
@@ -132,6 +138,15 @@ export interface OperatorProvisionedResult {
   readonly replayed: boolean;
 }
 
+/**
+ * The request was understood and refused before anything was dispatched.
+ *
+ * Covers every refusal of a well-formed plan: the step or environment is
+ * outside declared authority, its risk exceeds the ceiling, the budget
+ * cannot cover it, or the `requestId` was already used for a different
+ * plan. The common invariant is `dispatchedSteps: 0` — none of these
+ * reached a connector.
+ */
 export interface OperatorDeniedResult {
   readonly status: 'denied';
   readonly ts: string;
@@ -327,6 +342,7 @@ class GatedWorldOperator implements WorldOperator {
         ts,
         requestId,
         lineage,
+        programScope: lineageProgramKey(lineage),
         authority: existing.result.authority,
         connectorId: this.#connector.connectorId,
         requestDigest: digest,
@@ -396,21 +412,19 @@ class GatedWorldOperator implements WorldOperator {
     for (let i = 0; i < steps.length; i += 1) {
       const step = steps[i]!;
       const ref = decisions[i]!;
-      const outcome = await this.#connector.provision({
-        requestId,
-        lineage,
-        stepIndex: i,
-        step,
-        authority: ref,
-      });
+      // Sequential by necessity: the plan is an ordered sequence and the
+      // compensation that follows a failure depends on exactly which
+      // steps were applied and in what order. There is nothing here to
+      // parallelise.
+      const outcome = await this.#dispatch(i, step, ref, requestId, lineage);
       dispatchedSteps += 1;
       dispatchedUnits += ref.units;
       if (step.kind === 'billing.realCharge') dispatchedRealMoneyUnits += step.amountUnits;
 
       if (outcome.status === 'ok') {
-        const handle = parseResourceHandle(outcome.handle, `connector.outcome.handle[${i}]`);
-        // Only durable outcomes create rollback state. A read never
-        // wrote anything, so there is nothing to compensate.
+        // Already validated by #dispatch; a read never wrote anything,
+        // so only durable outcomes create rollback state.
+        const handle = outcome.handle;
         if (stepProducesResource(step) && outcome.durable) {
           applied.push({
             stepIndex: i,
@@ -463,6 +477,7 @@ class GatedWorldOperator implements WorldOperator {
         ts,
         requestId,
         lineage,
+        programScope: lineageProgramKey(lineage),
         authority: ref,
         connectorId: this.#connector.connectorId,
         failure,
@@ -504,6 +519,7 @@ class GatedWorldOperator implements WorldOperator {
       ts,
       requestId,
       lineage,
+      programScope: lineageProgramKey(lineage),
       authority: firstRef,
       connectorId: this.#connector.connectorId,
       resourceKeys: result.resourceKeys,
@@ -553,7 +569,8 @@ class GatedWorldOperator implements WorldOperator {
     // the same gate as a destructive step. A separate ungated "admin"
     // entry point would be exactly the second path around the boundary
     // this ticket exists to close.
-    const decision = authorizeStep(this.#policy, grant, CLEANUP_PROBE(grant.baseUrl));
+    const probe = CLEANUP_PROBE(grant.baseUrl);
+    const decision = authorizeStep(this.#policy, grant, probe);
     if (!decision.permitted) {
       return this.#denyCleanup(ts, requestId, lineage, {
         ts,
@@ -561,8 +578,8 @@ class GatedWorldOperator implements WorldOperator {
         where,
         message: decision.message,
         stepIndex: -1,
-        stepKind: 'fixture.reset',
-        resourceKey: CLEANUP_PROBE(grant.baseUrl).resourceKey,
+        stepKind: probe.kind,
+        resourceKey: probe.resourceKey,
         rolledBack: false,
         orphanedResourceKeys: [],
         detail: { ...decision.detail },
@@ -579,6 +596,7 @@ class GatedWorldOperator implements WorldOperator {
       ts,
       requestId,
       lineage,
+      programScope: lineageProgramKey(lineage),
       authority,
       connectorId: this.#connector.connectorId,
       releasedResourceKeys: compensation.released,
@@ -631,6 +649,50 @@ class GatedWorldOperator implements WorldOperator {
   }
 
   /**
+   * Run one step against the connector, converting every way it can fail
+   * into a classified outcome.
+   *
+   * A connector is third-party code: it may throw, or it may return a
+   * handle that is not a handle. Neither may escape as an exception,
+   * because `provision` returning a value rather than throwing is what
+   * makes a denial impossible to swallow as an ordinary error. A handle
+   * that does not parse is a *setup* failure, not a crash.
+   */
+  async #dispatch(
+    stepIndex: number,
+    step: OperatorStep,
+    ref: OperatorAuthorityRef,
+    requestId: ProvisionRequestId,
+    lineage: OperatorLineage,
+  ): Promise<ConnectorOutcome> {
+    let outcome: ConnectorOutcome;
+    try {
+      outcome = await this.#connector.provision({
+        requestId,
+        lineage,
+        stepIndex,
+        step,
+        authority: ref,
+      });
+    } catch (error) {
+      return { status: 'connectorFailed', message: describeThrown(error) };
+    }
+    if (outcome.status === 'ok') {
+      try {
+        parseResourceHandle(outcome.handle, `connector.outcome.handle[${stepIndex}]`);
+      } catch (error) {
+        return {
+          status: 'connectorFailed',
+          message: `connector returned an unusable handle: ${
+            error instanceof OperatorError ? error.message : describeThrown(error)
+          }`,
+        };
+      }
+    }
+    return outcome;
+  }
+
+  /**
    * Release applied resources in reverse application order.
    *
    * `released` and `orphaned` are reported in *release* order, which is
@@ -670,6 +732,7 @@ class GatedWorldOperator implements WorldOperator {
         ts: this.#now(),
         requestId,
         lineage,
+        programScope: lineageProgramKey(lineage),
         authority: entry.authority,
         connectorId: this.#connector.connectorId,
         stepIndex: entry.stepIndex,
@@ -780,6 +843,7 @@ class GatedWorldOperator implements WorldOperator {
       ts,
       requestId,
       lineage,
+      programScope: lineageProgramKey(lineage),
       authority,
       connectorId: this.#connector.connectorId,
       failure,
@@ -808,6 +872,7 @@ class GatedWorldOperator implements WorldOperator {
       ts,
       requestId,
       lineage,
+      programScope: lineageProgramKey(lineage),
       authority,
       connectorId: this.#connector.connectorId,
       failure,

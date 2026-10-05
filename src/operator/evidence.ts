@@ -69,6 +69,17 @@ interface OperatorAuditBase {
   readonly requestId: ProvisionRequestId;
   /** Product / Environment / Cohort / Review Program / run. */
   readonly lineage: OperatorLineage;
+  /**
+   * Durable program scope, excluding the environment.
+   *
+   * ADR-0011 names cross-release comparison as a cost of the durable
+   * model, and the axis it varies along is *the same program against a
+   * different deployment*. #57's `programKey` is that join key, so a
+   * release-transition analysis can group every setup action taken
+   * across both environments without re-deriving the rule. Delegated
+   * rather than re-derived, so it cannot drift from the durable model.
+   */
+  readonly programScope: string;
   /** The configured authority that permitted the action. */
   readonly authority: OperatorAuthorityRef;
   /** Which connector performed it. Non-secret identity only. */

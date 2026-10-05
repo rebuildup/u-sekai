@@ -14,6 +14,8 @@ import {
   createWorldOperator,
   isOperatorProductFailure,
   isOperatorSetupFailure,
+  isSetupProjection,
+  OPERATOR_AUDIT_KINDS,
   projectOperatorFailure,
   ScriptedProvisioningProvider,
   script,
@@ -97,17 +99,52 @@ describe('account provisioning', () => {
     });
   });
 
-  it('writes an audit record carrying lineage and authority for the plan', async () => {
+  it('writes an audit record carrying lineage, program scope and authority for the plan', async () => {
     const { operator } = harness();
     await operator.provision(provisionRequest());
 
     const audit = operator.audit();
     expect(audit).toHaveLength(1);
     const record = audit[0]!;
+    expect(OPERATOR_AUDIT_KINDS).toContain(record.kind);
     expect(record.kind).toBe('planProvisioned');
     expect(record.lineage.environmentId).toBe('env-staging');
     expect(record.authority.policyId).toBe('pol-staging');
     expect(record.connectorId).toBe('scripted');
+    // The cross-environment program scope, from #57's `programKey`: the
+    // durable scope excluding the environment, which is the axis a
+    // release transition varies along.
+    expect(record.programScope).toBe('prd-task-tracker|coh-returning|rp-staging-continuous');
+  });
+
+  it('gives the same program scope for two environments of one program', async () => {
+    // This is what makes a release-transition setup log joinable: the
+    // two deployments differ in `environmentId` and nothing else.
+    const { operator } = harness(
+      fullStagingPolicy({
+        environments: [stagingGrant(), productionGrant({ destructiveAllowed: true })],
+      }),
+    );
+    await operator.provision(provisionRequest({ requestId: 'req-staging' }));
+    await operator.provision(
+      provisionRequest({
+        requestId: 'req-production',
+        lineage: lineage({ environmentId: 'env-production' }),
+        steps: [
+          {
+            kind: 'account.create',
+            resourceKey: 'acct-alice',
+            origin: PRODUCTION_ORIGIN,
+            identityId: 'idn-alice',
+            displayName: 'Alice',
+          },
+        ],
+      }),
+    );
+
+    const scopes = operator.audit().map((r) => r.programScope);
+    expect(scopes).toHaveLength(2);
+    expect(scopes[0]).toBe(scopes[1]);
   });
 });
 
@@ -575,6 +612,10 @@ describe('setup failure versus product outcome', () => {
 
     expect(setupProjection.channel).toBe('runtimeError');
     expect(productProjection.channel).toBe('productSignal');
+    // The predicate is what a downstream router would use, and it
+    // discriminates the two the same way the projection does.
+    expect(isSetupProjection(setupProjection)).toBe(true);
+    expect(isSetupProjection(productProjection)).toBe(false);
     if (setupProjection.channel !== 'runtimeError' || productProjection.channel !== 'productSignal') {
       throw new Error('unreachable');
     }

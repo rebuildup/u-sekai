@@ -39,7 +39,7 @@ import { OperatorError } from './errors.js';
 import type { OperatorAuthorityRef } from './authority.js';
 import type { OperatorLineage, ProvisionRequestId } from './request.js';
 import type { OperatorStep, OperatorStepKind } from './steps.js';
-import { requireNonEmptyString, requireToken } from './validation.js';
+import { requireNonEmptyString } from './validation.js';
 import type { Brand } from '../product/index.js';
 
 /**
@@ -127,14 +127,4 @@ export interface ProvisioningConnector {
   readonly connectorId: string;
   provision(command: ConnectorCommand): Promise<ConnectorOutcome>;
   release(command: ConnectorReleaseCommand): Promise<ConnectorReleaseOutcome>;
-}
-
-/**
- * A connector identity is a token, not a URL and not a credential.
- *
- * Validated centrally so a connector cannot introduce a secret into every
- * audit record simply by naming itself with one.
- */
-export function assertConnectorId(value: unknown, field = 'connectorId'): string {
-  return requireToken(value, field, 64);
 }

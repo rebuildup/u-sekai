@@ -225,6 +225,63 @@ describe('re-running a provision is idempotent', () => {
 });
 
 describe('a mid-sequence failure leaves no orphaned state', () => {
+  it('treats a re-issue with only a different audit note as a retry', async () => {
+    // Regression: `reason` is an audit note, not part of what the plan
+    // does. When it was inside the digest, a caller that re-issued the
+    // same steps with a clearer note got a *different* digest, was told
+    // it was a conflicting plan, and the next real retry after that
+    // double-provisioned.
+    const provider = new ScriptedProvisioningProvider();
+    const operator = build(provider, fullStagingPolicy(), [AT, LATER]);
+
+    await operator.provision(provisionRequest({ reason: 'first attempt' }));
+    const retry = await operator.provision(provisionRequest({ reason: 'retry: clearer note' }));
+
+    expect(retry.status).toBe('provisioned');
+    if (retry.status !== 'provisioned') throw new Error('unreachable');
+    expect(retry.replayed).toBe(true);
+    expect(provider.provisionCalls).toBe(1);
+    expect(provider.liveResourceKeys()).toEqual(['acct-alice']);
+  });
+
+  it('classifies a connector that throws as a setup failure rather than an exception', async () => {
+    // Regression: `provision` returning a value instead of throwing is
+    // what makes a refusal impossible to swallow as an ordinary error.
+    // A connector throwing must not escape past that contract.
+    const provider = new ScriptedProvisioningProvider();
+    provider.provision = async () => {
+      throw new TypeError('socket hang up');
+    };
+    const operator = build(provider);
+
+    const result = await operator.provision(provisionRequest());
+    expect(result.status).toBe('failed');
+    if (result.status !== 'failed') throw new Error('unreachable');
+    expect(result.failure.subject).toBe('operatorSetup');
+    expect(result.failure.failureKind).toBe('connectorFailed');
+    expect(result.failure.message).toContain('TypeError');
+  });
+
+  it('classifies an unusable connector handle as a setup failure', async () => {
+    // A connector is third-party code and may return something that is
+    // not a handle. That is a setup failure, not a crash — and it must
+    // not be confused with a product rejection.
+    const provider = new ScriptedProvisioningProvider();
+    provider.provision = async () => ({
+      status: 'ok' as const,
+      handle: 'not a handle!' as never,
+      durable: true,
+      value: 'x',
+    });
+    const operator = build(provider);
+
+    const result = await operator.provision(provisionRequest());
+    expect(result.status).toBe('failed');
+    if (result.status !== 'failed') throw new Error('unreachable');
+    expect(result.failure.failureKind).toBe('connectorFailed');
+    expect(result.failure.message).toContain('unusable handle');
+  });
+
   it('releases everything applied before a step 3 of 5 failure', async () => {
     const provider = new ScriptedProvisioningProvider({
       failProvision: script({ ent: 'entitlement API unavailable' }),
@@ -241,8 +298,11 @@ describe('a mid-sequence failure leaves no orphaned state', () => {
     expect(result.appliedResourceKeys).toEqual(['acct', 'fx']);
     expect(result.releasedResourceKeys).toEqual(['fx', 'acct']);
     expect(result.orphanedResourceKeys).toEqual([]);
-    // The connector's own view, not the operator's bookkeeping.
+    // Two independent views agree: the connector's own record of what
+    // it created, and the operator's. A bug that lost track on one side
+    // while the other was correct cannot pass.
     expect(provider.liveResourceKeys()).toEqual([]);
+    expect(operator.liveResourceKeys()).toEqual([]);
   });
 
   it('releases in reverse application order', async () => {
@@ -291,8 +351,7 @@ describe('a mid-sequence failure leaves no orphaned state', () => {
     const provider = new ScriptedProvisioningProvider({
       failProvision: script({ ent: 'boom' }),
     });
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    (provider as any).release = async (command: ConnectorReleaseCommand): Promise<ConnectorReleaseOutcome> => {
+    provider.release = async (command: ConnectorReleaseCommand): Promise<ConnectorReleaseOutcome> => {
       if (command.resourceKey === 'fx') throw new Error('socket closed mid-release');
       return { released: true, message: 'ok' };
     };

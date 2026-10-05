@@ -54,7 +54,6 @@ export {
   parseOperatorStep,
   riskAtLeast,
   stepConsumesResource,
-  stepIdentityId,
   stepProducesResource,
   type AccountCreateStep,
   type AccountRetireStep,
@@ -100,7 +99,6 @@ export {
   parseOperatorLineage,
   parseProvisionRequest,
   parseProvisionRequestId,
-  planStepKinds,
   provisionRequestId,
   requestDigest,
   requestJournalKey,
@@ -110,7 +108,6 @@ export {
 } from './request.js';
 
 export {
-  assertConnectorId,
   parseResourceHandle,
   type ConnectorCommand,
   type ConnectorOutcome,

@@ -35,21 +35,14 @@ export function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
-export function requireRecord(
-  value: unknown,
-  field: string,
-  failureKind: OperatorContractFailureKind = 'invalidRequest',
-): Record<string, unknown> {
+export function requireRecord(value: unknown, field: string): Record<string, unknown> {
   if (!isRecord(value)) {
-    throw new OperatorError(failureKind, `${field} must be an object`, field, {
-      received: describe(value),
+    throw new OperatorError('invalidRequest', `${field} must be an object`, field, {
+      received: describeValue(value),
     });
   }
   return value;
 }
-
-/** `invalidRequest` for plans; `authorityDenied` never parses, so this is only ever that. */
-export type OperatorContractFailureKind = 'invalidRequest';
 
 /** Reject any key the operator vocabulary does not declare. */
 export function rejectUnknownKeys(
@@ -73,7 +66,7 @@ export function rejectUnknownKeys(
 export function requireString(value: unknown, field: string): string {
   if (typeof value !== 'string') {
     throw new OperatorError('invalidRequest', `${field} must be a string`, field, {
-      received: describe(value),
+      received: describeValue(value),
     });
   }
   return value;
@@ -98,7 +91,7 @@ export function requireNonEmptyString(value: unknown, field: string, maxLength =
 export function requireArray(value: unknown, field: string): unknown[] {
   if (!Array.isArray(value)) {
     throw new OperatorError('invalidRequest', `${field} must be an array`, field, {
-      received: describe(value),
+      received: describeValue(value),
     });
   }
   return value;
@@ -126,7 +119,7 @@ export function requireOneOf<T extends string>(value: unknown, allowed: readonly
 export function requireInteger(value: unknown, field: string, min: number, max: number): number {
   if (typeof value !== 'number' || !Number.isInteger(value)) {
     throw new OperatorError('invalidRequest', `${field} must be an integer`, field, {
-      received: describe(value),
+      received: describeValue(value),
     });
   }
   if (value < min || value > max) {
@@ -140,16 +133,27 @@ export function requireInteger(value: unknown, field: string, min: number, max: 
   return value;
 }
 
-export function requireFiniteNumber(value: unknown, field: string, min: number): number {
+export function requireFiniteNumber(
+  value: unknown,
+  field: string,
+  min: number,
+  max = Number.POSITIVE_INFINITY,
+): number {
   if (typeof value !== 'number' || !Number.isFinite(value)) {
     throw new OperatorError('invalidRequest', `${field} must be a finite number`, field, {
-      received: describe(value),
+      received: describeValue(value),
     });
   }
   if (value < min) {
     throw new OperatorError('invalidRequest', `${field} must be >= ${min}`, field, {
       received: value,
       min,
+    });
+  }
+  if (value > max) {
+    throw new OperatorError('invalidRequest', `${field} must be <= ${max}`, field, {
+      received: value,
+      max,
     });
   }
   return value;
@@ -227,7 +231,11 @@ export function canonicalJson(value: unknown): string {
   return `{${entries.join(',')}}`;
 }
 
-function describe(value: unknown): string {
+/**
+ * Name a value's type for a diagnostic, without interpolating the value
+ * itself — an error message must never carry a secret value.
+ */
+export function describeValue(value: unknown): string {
   if (value === null) return 'null';
   if (Array.isArray(value)) return 'array';
   return typeof value;

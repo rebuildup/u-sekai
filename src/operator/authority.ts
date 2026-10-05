@@ -46,7 +46,13 @@
  * downgrading, and no path that returns `permitted` alongside a warning.
  */
 
-import { environmentIncludesOrigin, parseEnvironment, type Environment, type EnvironmentClass } from '../product/index.js';
+import {
+  environmentIncludesOrigin,
+  parseEnvironment,
+  productId,
+  type Environment,
+  type EnvironmentClass,
+} from '../product/index.js';
 import type { OperatorSetupFailureKind } from './errors.js';
 import { grantOrigins, stepCost, type OperatorAuthorityPolicy, type OperatorEnvironmentGrant } from './policy.js';
 import {
@@ -249,6 +255,14 @@ export function authorizeStep(
 }
 
 /**
+ * Product id for the throwaway `Environment` built only to reuse #57's
+ * origin canonicalisation. It names no real product and is never
+ * persisted, exported or sent anywhere; `parseEnvironment` requires a
+ * product id, and the check only reads the endpoint.
+ */
+const AUTHORITY_PROBE_PRODUCT_ID = productId('prd-authority-probe');
+
+/**
  * Whether an origin is one the environment grant permits.
  *
  * Builds a real `Environment` from the grant and reuses #57's
@@ -260,7 +274,7 @@ export function authorizeStep(
 function environmentAllowsOrigin(grant: OperatorEnvironmentGrant, origin: string): boolean {
   const environment: Environment = parseEnvironment({
     id: grant.environmentId,
-    productId: 'prd-authority-probe',
+    productId: AUTHORITY_PROBE_PRODUCT_ID,
     name: 'authority-probe',
     environmentClass: grant.environmentClass,
     deploymentKind: 'continuous',

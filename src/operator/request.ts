@@ -50,10 +50,10 @@ import {
   stepConsumesResource,
   stepProducesResource,
   type OperatorStep,
-  type OperatorStepKind,
 } from './steps.js';
 import {
   canonicalJson,
+  describeValue,
   optionalString,
 
   rejectUnknownKeys,
@@ -86,7 +86,7 @@ export function provisionRequestId(value: string): ProvisionRequestId {
 export function parseProvisionRequestId(value: unknown, field = 'requestId'): ProvisionRequestId {
   if (typeof value !== 'string') {
     throw new OperatorError('invalidRequest', `${field} must be a string`, field, {
-      received: value === null ? 'null' : Array.isArray(value) ? 'array' : typeof value,
+      received: describeValue(value),
     });
   }
   return provisionRequestId(value);
@@ -225,25 +225,25 @@ function parsePlan(value: unknown, field: string): ReadonlyArray<OperatorStep> {
   return Object.freeze(steps);
 }
 
-/** Every step kind in a plan, for budget arithmetic and audit. */
-export function planStepKinds(plan: ReadonlyArray<OperatorStep>): ReadonlyArray<OperatorStepKind> {
-  return Object.freeze(plan.map((s) => s.kind));
-}
-
 /**
  * Stable digest of a request's meaning.
  *
- * Two fields are excluded on purpose, and both for the same reason: the
- * digest answers "is this the same *plan*?", and neither field is part of
- * what the plan does.
+ * Three fields are excluded on purpose, and all for the same reason: the
+ * digest answers "is this the same *plan*?", and none of them is part of
+ * what the plan does to the world.
  *
  * - `requestId` is what selects the journal entry, not what the plan is.
  *   Including it would make a retry look like a different plan.
  * - `runId` is minted by the runtime that executes a run. A caller
  *   retrying after a crashed run re-issues the *same* plan under a *new*
- *   run id, and that retry must be recognised as the same intent —
- *   otherwise the retry double-provisions, which is the one outcome
- *   idempotency exists to prevent.
+ *   run id, and that retry must be recognised as the same intent.
+ * - `reason` is an audit note. It changes nothing about the world, so a
+ *   caller that re-issued the same steps with a clearer note is retrying,
+ *   not asking for something different. Including it would let a
+ *   cosmetic edit turn an idempotent retry into a second provision.
+ *
+ * Everything that *does* change the world — the durable scope and every
+ * step, in order — is inside the digest.
  */
 export function requestDigest(request: ProvisionRequest): string {
   const canonical = canonicalJson({
@@ -254,7 +254,6 @@ export function requestDigest(request: ProvisionRequest): string {
       programId: request.lineage.programId,
     },
     steps: request.steps,
-    reason: request.reason ?? null,
   });
   return createHash('sha256').update(canonical, 'utf8').digest('hex');
 }

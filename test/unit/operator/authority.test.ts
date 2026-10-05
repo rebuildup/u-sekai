@@ -72,26 +72,38 @@ describe('risk classes', () => {
   });
 
   it('models real money as a distinct step kind, not a flag on a shared one', () => {
-    // There is no `mode`/`live` field anywhere in the vocabulary, so
+    // A minimal valid body for every step kind. There is no `mode`,
+    // `live` or `realMoney` field anywhere in the vocabulary, so
     // "sandbox" cannot be flipped to "real" by editing a value.
-    for (const kind of OPERATOR_STEP_KINDS) {
-      const parsed = step(
-        kind === 'account.retire' || kind === 'fixture.reset' || kind === 'entitlement.revoke'
-          ? { kind, resourceKey: 'r', origin: STAGING_ORIGIN }
-          : kind === 'inbox.read'
-            ? { kind, resourceKey: 'r', origin: STAGING_ORIGIN, identityId: 'idn-a', folder: 'test-inbox', maxMessages: 5 }
-            : kind === 'account.create'
-              ? { kind, resourceKey: 'r', origin: STAGING_ORIGIN, identityId: 'idn-a', displayName: 'A' }
-              : kind === 'fixture.seed'
-                ? { kind, resourceKey: 'r', origin: STAGING_ORIGIN, identityId: 'idn-a', template: 'smoke-v2' }
-                : kind === 'entitlement.grant'
-                  ? { kind, resourceKey: 'r', origin: STAGING_ORIGIN, identityId: 'idn-a', entitlement: 'pro' }
-                  : { kind, resourceKey: 'r', origin: STAGING_ORIGIN, identityId: 'idn-a', amountUnits: 1 },
-      );
+    const base = { resourceKey: 'r', origin: STAGING_ORIGIN } as const;
+    const actor = { ...base, identityId: 'idn-a' } as const;
+    const bodies: Readonly<Record<string, Record<string, unknown>>> = {
+      'account.create': { ...actor, displayName: 'A' },
+      'account.retire': { ...base },
+      'fixture.seed': { ...actor, template: 'smoke-v2' },
+      'fixture.reset': { ...base },
+      'entitlement.grant': { ...actor, entitlement: 'pro' },
+      'entitlement.revoke': { ...base },
+      'inbox.read': { ...actor, folder: 'test-inbox', maxMessages: 5 },
+      'billing.sandboxCharge': { ...actor, amountUnits: 1 },
+      'billing.realCharge': { ...actor, amountUnits: 1 },
+    };
+
+    expect(Object.keys(bodies).sort()).toEqual([...OPERATOR_STEP_KINDS].sort());
+    for (const [kind, body] of Object.entries(bodies)) {
+      const parsed = step({ kind, ...body });
       expect(Object.keys(parsed as object)).not.toContain('mode');
       expect(Object.keys(parsed as object)).not.toContain('live');
       expect(Object.keys(parsed as object)).not.toContain('realMoney');
     }
+  });
+
+  it('bounds a billing amount at the declaration, not only in policy', () => {
+    // A real-money amount needs a parse-time ceiling, so the hard limit
+    // on spending does not depend on a policy happening to be configured.
+    expect(() =>
+      step({ kind: 'billing.realCharge', resourceKey: 'r', origin: STAGING_ORIGIN, identityId: 'idn-a', amountUnits: 2_000_000 }),
+    ).toThrow(/must be <= 1000000/);
   });
 });
 
