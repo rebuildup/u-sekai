@@ -17,16 +17,30 @@
  * lineage metadata attached to an observation of it. Nothing here makes
  * a version into an identity, and nothing here resolves a diff.
  *
- * ## A transition is *within one environment*
+ * ## The environment is the axis a transition varies *along*
  *
- * `resolveVersionLineage` requires `previous.environmentId ===
- * current.environmentId`. ADR-0011's release transition is "a persistent
- * cohort experiences an earlier version and then a newer version" — the
- * experiment is a single environment promoted, so that memory, habits,
- * expectations and stored data formed under version A are still present
- * on version B. A staging-to-production promotion is a different
- * experiment with different state semantics, and silently treating it as
- * a release transition would join evidence that does not belong together.
+ * #57's `programKey` joins a `ReviewProgram` and a `Cohort` and
+ * deliberately **excludes** the environment, and
+ * `isReleaseTransitionComparison` treats the environment as the thing
+ * that changes rather than the thing that must match. So the canonical
+ * release transition here is the *same cohort on the same program,
+ * observed against a different deployment* — a staging version before,
+ * the environment it was promoted into after.
+ *
+ * `resolveVersionLineage` follows that. It accepts both shapes and
+ * records which one it found in `VersionLineage.kind`:
+ *
+ * - `crossEnvironment` — different environment, different version. The
+ *   ordinary case: a build observed in one environment and the same
+ *   build line observed in the next.
+ * - `sameEnvironment` — one environment promoted to a new version. Also
+ *   a real transition, and the shape #57's own acceptance tests cover.
+ *
+ * An earlier revision of this module rejected the cross-environment
+ * shape. That was compensating for the *previous* #57 contract, which
+ * required an equal `environmentId`; it was removed rather than kept,
+ * because under the current contract it would reject the exact case the
+ * predicate exists to recognise.
  */
 
 import { EnvironmentId, parseEnvironmentId } from '../product/index.js';
@@ -59,6 +73,14 @@ export interface EnvironmentObservation {
 export interface VersionLineage {
   readonly previous: EnvironmentObservation;
   readonly current: EnvironmentObservation;
+  /**
+   * Which shape of transition this is. See the module docstring: #57's
+   * `programKey` excludes the environment, so a move to a different
+   * environment of the same product is the ordinary case, and a plan
+   * that cannot say which shape it carries would force #67 to
+   * rediscover it.
+   */
+  readonly kind: 'sameEnvironment' | 'crossEnvironment';
 }
 
 const OBSERVATION_FIELDS = ['observationId', 'environmentId', 'version', 'observedAt'] as const;
@@ -120,16 +142,13 @@ export function sortObservations(
 /** Why two observations are not a release transition, in operator words. */
 export type LineageGap =
   | 'insufficient-observations'
-  | 'environment-mismatch'
   | 'same-version'
   | 'not-advanced-in-time';
 
 export const LINEAGE_GAP_EXPLANATIONS: Readonly<Record<LineageGap, string>> = Object.freeze({
   'insufficient-observations':
-    'a release transition needs a previous and a current observation of the same environment',
-  'environment-mismatch':
-    'a release transition is one environment changing version, not one environment becoming another',
-  'same-version': 'the two observations report the same environment version, so nothing transitioned',
+    'a release transition needs a previous and a current observation of the same program scope',
+  'same-version': 'the two observations report the same version, so nothing transitioned',
   'not-advanced-in-time': 'the current observation is not strictly after the previous observation',
 });
 
@@ -141,10 +160,14 @@ export type LineageResolution =
  * Derive a version lineage from observations, or explain why there is
  * none.
  *
- * Only the two *latest* observations of a single environment are
- * considered. Reaching further back would let a three-observation
- * history pick a "previous" that is two versions stale, which is not the
- * transition a release-transition evaluation is about.
+ * Only the two *latest* observations are considered. Reaching further
+ * back would let a three-observation history pick a "previous" that is
+ * two versions stale, which is not the transition a release-transition
+ * evaluation is about.
+ *
+ * The caller must pass observations already scoped to one program's
+ * declared environments; this function does not know a program's scope
+ * and will happily build a lineage across two products if handed both.
  */
 export function resolveVersionLineage(
   observations: readonly EnvironmentObservation[],
@@ -158,14 +181,13 @@ export function resolveVersionLineage(
   if (current === undefined || previous === undefined) {
     return { ok: false, gap: 'insufficient-observations' };
   }
-  if (previous.environmentId !== current.environmentId) {
-    return { ok: false, gap: 'environment-mismatch' };
-  }
   if (previous.version === current.version) {
     return { ok: false, gap: 'same-version' };
   }
   if (Date.parse(previous.observedAt) >= Date.parse(current.observedAt)) {
     return { ok: false, gap: 'not-advanced-in-time' };
   }
-  return { ok: true, lineage: Object.freeze({ previous, current }) };
+  const kind =
+    previous.environmentId === current.environmentId ? 'sameEnvironment' : 'crossEnvironment';
+  return { ok: true, lineage: Object.freeze({ previous, current, kind }) };
 }

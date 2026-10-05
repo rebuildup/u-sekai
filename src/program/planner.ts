@@ -65,19 +65,22 @@
  */
 
 import {
-  ALLOWED_STATE_RETENTION,
   CohortMembershipIntent,
   Environment,
   EnvironmentId,
+  EvaluationTargetRef,
   ProductModel,
   ReviewProgram,
   ReviewProgramId,
+  IdentityLifecycle,
+  RetentionForLifecycle,
   StateRetention,
   SyntheticCohort,
   environmentOrigins,
   findCohort,
   findEnvironment,
   findProgram,
+  programKey,
 } from '../product/index.js';
 import { requireInteger, requireIsoInstant } from '../product/validation.js';
 import {
@@ -119,6 +122,14 @@ import {
 } from './trigger.js';
 
 /** Hard module ceilings. A caller may ask for less, never for more. */
+const MAX_RETENTION_BY_LIFECYCLE: {
+  readonly [L in IdentityLifecycle]: RetentionForLifecycle<L>;
+} = Object.freeze({
+  ephemeral: 'none',
+  release: 'durable',
+  persistent: 'durable',
+});
+
 export const MAX_IDENTITIES_PER_PLAN = 1_000;
 export const MAX_MUTATING_ACTIONS_PER_PLAN = 200;
 export const MAX_VERIFICATIONS_PER_PLAN = 200;
@@ -255,11 +266,14 @@ export function planEvaluation(input: PlanEvaluationInput): PlanDecision {
   }
   const suppressed = toSuppressed(resolution.candidates.slice(1));
 
-  // Target environment: the latest observation inside the program's
-  // declared environments, else the first declared environment. Both
-  // are deterministic and neither depends on how the caller ordered
-  // its input.
-  const environmentId = resolveEnvironmentId(program, observations);
+  // Observations are scoped to the environments this program declares.
+  //
+  // Lineage is resolved across *all* of them, not just the target: per
+  // #57's `programKey` the environment is the axis a release transition
+  // varies along, so the "previous" observation usually lives in a
+  // different environment than the one about to be evaluated.
+  const inScope = observationsInScope(program, observations);
+  const environmentId = resolveEnvironmentId(program, inScope);
   const environment = findEnvironment(input.model, environmentId);
   if (environment === undefined) {
     throw new ProgramPlanningError(
@@ -269,11 +283,8 @@ export function planEvaluation(input: PlanEvaluationInput): PlanDecision {
     );
   }
 
-  const environmentObservations = sortObservations(
-    observations.filter((o) => o.environmentId === environmentId),
-  );
-  const currentObservation = environmentObservations[environmentObservations.length - 1];
-  const lineageResolution = resolveVersionLineage(environmentObservations);
+  const currentObservation = sortObservations(inScope)[inScope.length - 1];
+  const lineageResolution = resolveVersionLineage(inScope);
 
   // 3. Is the requested mode satisfiable?
   const mode = resolveMode(input.requestedMode, winner, lineageResolution.ok);
@@ -283,7 +294,8 @@ export function planEvaluation(input: PlanEvaluationInput): PlanDecision {
       detail: {
         gap: lineageResolution.gap,
         explanation: LINEAGE_GAP_EXPLANATIONS[lineageResolution.gap],
-        observedVersions: environmentObservations.map((o) => ({
+        observedVersions: sortObservations(inScope).map((o) => ({
+          environmentId: o.environmentId,
           version: o.version,
           observedAt: o.observedAt,
         })),
@@ -307,23 +319,23 @@ export function planEvaluation(input: PlanEvaluationInput): PlanDecision {
   const maxVerifications = Math.min(selection.plannedIdentities, MAX_VERIFICATIONS_PER_PLAN);
   const cost = planCost(selection.plannedIdentities, maxVerifications, rates);
 
-  const planKey = planKeyFrom([
-    winner.idempotencyKey,
-    program.id,
-    program.productId,
+  const target: EvaluationTargetRef = {
+    productId: program.productId,
     environmentId,
-    program.cohortId,
-  ]);
+    cohortId: program.cohortId,
+    programId: program.id,
+  };
+  // The program-scope component is #57's `programKey`, not a local
+  // re-listing of the same three ids: if #57 ever changes what defines
+  // a program's scope, this key follows it instead of drifting.
+  const planKey = planKeyFrom([winner.idempotencyKey, programKey(target), environmentId]);
   const trigger = buildPlanTrigger(program, winner);
 
   const plan = buildEvaluationPlan({
     planKey,
     idempotencyKey: winner.idempotencyKey,
     mode,
-    productId: program.productId,
-    environmentId,
-    cohortId: program.cohortId,
-    programId: program.id,
+    ...target,
     trigger,
     cohort: selection,
     escalation: {
@@ -460,21 +472,28 @@ function parseAuthorityRefs(value: ReadonlyArray<AuthorityRef> | undefined): Rea
   return Object.freeze(refs);
 }
 
+/** Observations of environments the program declares, in any order. */
+function observationsInScope(
+  program: ReviewProgram,
+  observations: ReadonlyArray<EnvironmentObservation>,
+): ReadonlyArray<EnvironmentObservation> {
+  const declared = new Set<string>(program.environmentIds);
+  return observations.filter((o) => declared.has(o.environmentId));
+}
+
 /**
  * The environment a plan targets.
  *
- * The latest observation within the program's declared environments
- * wins; with no observations, the first declared environment does.
- * Program-declared order is the declaration author's intent, so it is
- * a deterministic fallback rather than an arbitrary pick.
+ * The latest in-scope observation wins; with no observations, the first
+ * declared environment does. Program-declared order is the declaration
+ * author's intent, so it is a deterministic fallback rather than an
+ * arbitrary pick.
  */
 function resolveEnvironmentId(
   program: ReviewProgram,
-  observations: ReadonlyArray<EnvironmentObservation>,
+  inScope: ReadonlyArray<EnvironmentObservation>,
 ): EnvironmentId {
-  const declared = new Set<string>(program.environmentIds);
-  const relevant = sortObservations(observations.filter((o) => declared.has(o.environmentId)));
-  const latest = relevant[relevant.length - 1];
+  const latest = sortObservations(inScope)[inScope.length - 1];
   if (latest !== undefined) {
     return latest.environmentId;
   }
@@ -641,9 +660,22 @@ function buildAuthorityEnvelope(
   });
 }
 
-function maxRetentionFor(
-  lifecycle: keyof typeof ALLOWED_STATE_RETENTION,
-): StateRetention {
-  const permitted = ALLOWED_STATE_RETENTION[lifecycle];
-  return permitted[permitted.length - 1] ?? 'none';
+/**
+ * The most retention a cohort's identities may hold, per lifecycle.
+ *
+ * The mapped type is the point. `ALLOWED_STATE_RETENTION` is declared as
+ * `Readonly<Record<IdentityLifecycle, ReadonlyArray<StateRetention>>>`,
+ * so indexing it can only ever yield the broad union — it cannot check a
+ * lifecycle against its own retentions. Deriving from
+ * `RetentionForLifecycle<L>` instead means each entry here is verified
+ * against #57's own lifecycle/retention matrix at compile time, and a
+ * lifecycle added to that matrix without a decision here is a missing-
+ * key compile error rather than a silently wrong authority envelope.
+ *
+ * Retention is per-lifecycle by ADR-0011: an `ephemeral` identity retains
+ * nothing, so a cohort of them must not be planned with a retention
+ * ceiling that implies otherwise.
+ */
+function maxRetentionFor(lifecycle: IdentityLifecycle): StateRetention {
+  return MAX_RETENTION_BY_LIFECYCLE[lifecycle];
 }

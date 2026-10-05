@@ -23,6 +23,7 @@ import {
   type PlanDecision,
 } from '../../../src/program/index.js';
 import {
+  CADENCE_60M,
   MANUAL_TRIGGER,
   RATES,
   makeModel,
@@ -59,12 +60,12 @@ function modelWith(budget: Partial<Parameters<typeof makeProgram>[0]['budget']> 
 
 function evaluate(
   model: ReturnType<typeof modelWith>,
-  overrides: { signals?: readonly unknown[]; ledger?: BudgetLedger } = {},
+  overrides: { signals?: readonly unknown[]; ledger?: BudgetLedger; now?: string } = {},
 ): PlanDecision {
   return planEvaluation({
     model,
     programId: reviewProgramId('rp-budget'),
-    now: NOW,
+    now: overrides.now ?? NOW,
     signals: overrides.signals as never,
     planningCeiling: CEILING,
     rates: RATES,
@@ -385,5 +386,84 @@ describe('Ledger identity', () => {
     expect(ledger.programId).toBe(reviewProgramId('rp-budget'));
     expect(ledger.costUnitsSpent).toBe(0);
     expect(ledger.consumedKeys).toEqual([]);
+  });
+});
+
+describe('A plan that is emitted but never executed still costs', () => {
+  // The failure mode worth ruling out: accounting that charges on
+  // *completion* would make a dead executor look like a healthy budget
+  // — spend zero, full remaining, nothing verified. Charging at plan
+  // time inverts that: a plan nobody runs still drains the ceiling, so
+  // a stalled executor is visible in the ledger instead of invisible
+  // behind it.
+  it('charges on emission, so an unexecuted plan is not a zero-spend run', () => {
+    const model = modelWith({ maxCostUnitsPerDay: 1_000_000 });
+    const decision = expectDue(evaluate(model, { signals: [manualSignal(1)] }));
+
+    // The executor is never invoked. There is no code path in this
+    // layer that could later report the run as "did not happen" and
+    // refund it, because the ledger has no release path at all.
+    expect(decision.ledger.costUnitsSpent).toBe(PLAN_COST);
+    expect(decision.ledger.runsSpent).toBe(1);
+    expect(decision.ledger.consumedKeys).toHaveLength(1);
+  });
+
+  it('distinguishes "planner ran, nothing was due" in the decision it returns', () => {
+    // A cadence program, so there is a state in which nothing is due
+    // yet. A manual trigger has no such state: a manual request is
+    // always eligible once it arrives.
+    const cadence = makeProgram({
+      id: 'rp-idle',
+      triggers: [CADENCE_60M],
+      cohortId: 'coh-explicit',
+      budget: { maxCostUnitsPerDay: 1_000_000 },
+    });
+    const idleModel = makeModel({ programs: [cadence] });
+    const beforeAnchor = planEvaluation({
+      model: idleModel,
+      programId: reviewProgramId('rp-idle'),
+      now: '2026-03-01T09:00:00.000Z',
+      planningCeiling: CEILING,
+      rates: RATES,
+      maxMutatingActions: 2,
+    });
+
+    expect(beforeAnchor.outcome).toBe('not-due');
+    if (beforeAnchor.outcome !== 'not-due') return;
+    expect(beforeAnchor.reason).toBe('no-trigger');
+    // A positive assertion that the planner ran and observed these,
+    // not merely an absence of a plan.
+    expect(beforeAnchor.detail['declaredTriggers']).toEqual(['cadence']);
+    expect(beforeAnchor.detail['deliveredSignals']).toEqual([]);
+    // Nothing was charged, because nothing was planned.
+    expect(beforeAnchor.ledger.costUnitsSpent).toBe(0);
+  });
+
+  it('leaves the planner-liveness gap visible rather than silently healthy', () => {
+    // Known limitation, deliberately pinned so it cannot be forgotten:
+    // the LEDGER alone cannot tell "planner ran, found nothing due" from
+    // "planner never ran". Both leave spend at zero and consumedKeys
+    // empty; only the returned decision carries evidence of a pass.
+    // See NEW_DEFECT in the PR body.
+    const cadence = makeProgram({
+      id: 'rp-idle',
+      triggers: [CADENCE_60M],
+      cohortId: 'coh-explicit',
+      budget: { maxCostUnitsPerDay: 1_000_000 },
+    });
+    const idleModel = makeModel({ programs: [cadence] });
+    const decided = planEvaluation({
+      model: idleModel,
+      programId: reviewProgramId('rp-idle'),
+      now: '2026-03-01T09:00:00.000Z',
+      planningCeiling: CEILING,
+      rates: RATES,
+      maxMutatingActions: 2,
+    });
+    const neverRan = createBudgetLedger(cadence.id, cadence.budget, defaultBudgetWindow(NOW));
+
+    expect(decided.ledger.costUnitsSpent).toBe(neverRan.costUnitsSpent);
+    expect(decided.ledger.consumedKeys).toEqual([...neverRan.consumedKeys]);
+    expect(decided.outcome).not.toBe('due');
   });
 });

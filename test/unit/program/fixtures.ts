@@ -123,6 +123,13 @@ function baseCohorts() {
       name: 'All release identities',
       membership: { kind: 'byLifecycle', lifecycle: 'release' },
     }),
+    // Retention is per-lifecycle: an ephemeral identity retains nothing.
+    parseSyntheticCohort({
+      id: 'coh-ephemeral',
+      productId: PRODUCT_ID,
+      name: 'Fresh visitors',
+      membership: { kind: 'byLifecycle', lifecycle: 'ephemeral' },
+    }),
     // Declared size.
     parseSyntheticCohort({
       id: 'coh-size',
@@ -217,4 +224,22 @@ export function deploymentSignal(
   event = 'deployment.completed',
 ) {
   return parseTriggerSignal({ kind: 'event', deliveryId, event, occurredAt });
+}
+
+/** Before/after observations of one product across two environments. */
+export function crossEnvironmentPair() {
+  return [
+    observation({
+      observationId: 'obs-pre',
+      environmentId: 'env-staging',
+      version: '2026.03.01',
+      observedAt: '2026-03-01T09:00:00.000Z',
+    }),
+    observation({
+      observationId: 'obs-prod',
+      environmentId: 'env-production-like',
+      version: '2026.03.02',
+      observedAt: '2026-03-02T09:00:00.000Z',
+    }),
+  ];
 }

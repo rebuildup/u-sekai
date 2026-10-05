@@ -14,15 +14,14 @@ import {
   MAX_IDENTITIES_PER_PLAN,
   MAX_MUTATING_ACTIONS_PER_PLAN,
   MAX_VERIFICATIONS_PER_PLAN,
-  LINEAGE_GAP_EXPLANATIONS,
   parseStageCostRates,
   planCost,
-  resolveVersionLineage,
   planEvaluation,
   type EvaluationPlan,
   type PlanDecision,
   type PlanEvaluationInput,
 } from '../../../src/program/index.js';
+import { ALLOWED_STATE_RETENTION } from '../../../src/product/index.js';
 import {
   ANCHOR,
   CADENCE_60M,
@@ -32,6 +31,7 @@ import {
   RATES,
   STAGING_ID,
   STAGING_ORIGIN,
+  crossEnvironmentPair,
   makeModel,
   makeProgram,
   manualSignal,
@@ -49,7 +49,14 @@ const CEILING = 5;
 
 const cadenceProgram = makeProgram({ id: 'rp-cadence', triggers: [CADENCE_60M] });
 const manualProgram = makeProgram({ id: 'rp-manual', triggers: [MANUAL_TRIGGER] });
-const model = makeModel({ programs: [cadenceProgram, manualProgram] });
+const bothEnvironmentsProgram = makeProgram({
+  id: 'rp-both',
+  triggers: [MANUAL_TRIGGER],
+  environmentIds: [STAGING_ID, PROD_LIKE_ID],
+});
+const model = makeModel({
+  programs: [cadenceProgram, manualProgram, bothEnvironmentsProgram],
+});
 
 const OBS_V1 = observation({
   observationId: 'obs-v1',
@@ -179,23 +186,47 @@ describe('Release-transition lineage', () => {
     expect(decision.detail['explanation']).toBeTypeOf('string');
   });
 
-  it('explains an environment-mismatch lineage gap', () => {
-    // A transition is one environment changing version. Two different
-    // environments observed in sequence is a different experiment, and
-    // joining their evidence would be wrong.
-    //
-    // This gap is guarded at the `resolveVersionLineage` boundary:
-    // `planEvaluation` filters to a single target environment before
-    // resolving, so a caller cannot reach the planner with a mismatched
-    // pair in the first place.
-    const resolution = resolveVersionLineage([
-      observation({ observationId: 'obs-staging', environmentId: STAGING_ID, version: '2026.03.01', observedAt: iso(8 * HOUR) }),
-      observation({ observationId: 'obs-prodlike', environmentId: PROD_LIKE_ID, version: '2026.03.02', observedAt: iso(9 * HOUR) }),
-    ]);
-    expect(resolution.ok).toBe(false);
-    if (resolution.ok) return;
-    expect(resolution.gap).toBe('environment-mismatch');
-    expect(LINEAGE_GAP_EXPLANATIONS[resolution.gap]).toMatch(/one environment changing version/);
+  it('accepts a transition across two environments of one product', () => {
+    // #57's `programKey` excludes the environment precisely so this is
+    // recognised: the same program and cohort, observed against the
+    // deployment it was promoted into.
+    const pair = crossEnvironmentPair();
+    const plan = expectDue(
+      evaluate('rp-both', {
+        observations: pair,
+        signals: [manualSignal('m-both', iso(10 * HOUR))],
+        requestedMode: 'releaseTransition',
+      }),
+    );
+    expect(plan.lineage?.kind).toBe('crossEnvironment');
+    expect(plan.lineage?.previous.environmentId).toBe(STAGING_ID);
+    expect(plan.lineage?.current.environmentId).toBe(PROD_LIKE_ID);
+    // The plan runs against the *current* environment; the previous one
+    // is preserved only as the join key #67 needs.
+    expect(plan.target.environmentId).toBe(PROD_LIKE_ID);
+  });
+
+  it('marks a single environment promoted to a new version as sameEnvironment', () => {
+    const plan = expectDue(
+      evaluate('rp-cadence', {
+        observations: [OBS_V1, OBS_V2],
+        requestedMode: 'releaseTransition',
+      }),
+    );
+    expect(plan.lineage?.kind).toBe('sameEnvironment');
+    expect(plan.target.environmentId).toBe(STAGING_ID);
+  });
+
+  it('resolves lineage across every environment the program declares', () => {
+    // The program declares staging only, so the production-like
+    // observation is out of scope and no lineage is available.
+    const decision = evaluate('rp-cadence', {
+      requestedMode: 'releaseTransition',
+      observations: crossEnvironmentPair(),
+    });
+    expect(decision.outcome).toBe('not-due');
+    if (decision.outcome !== 'not-due') return;
+    expect(decision.detail['gap']).toBe('insufficient-observations');
   });
 
   it('takes the two latest observations, not the two furthest apart', () => {
@@ -461,6 +492,41 @@ describe('Authority envelope', () => {
     expect(explicit.authority.retentionResolution).toBe('per-identity-at-runtime');
     expect(explicit.authority.maxMutatingActions).toBe(0);
   });
+
+  it.each([
+    ['coh-ephemeral', 'none'],
+    ['coh-release', 'durable'],
+  ] as const)(
+    'retention-follows-the-lifecycle-matrix: %s advertises %s',
+    (cohortId, expected) => {
+      const program_ = makeProgram({
+        id: `rp-${cohortId}`,
+        triggers: [MANUAL_TRIGGER],
+        cohortId,
+      });
+      const perLifecycle = makeModel({ programs: [program_] });
+      const plan = expectDue(
+        planEvaluation({
+          model: perLifecycle,
+          programId: reviewProgramId(`rp-${cohortId}`),
+          now: NOW,
+          signals: [manualSignal(`m-${cohortId}`, iso(10 * HOUR))],
+          planningCeiling: CEILING,
+          rates: RATES,
+          maxMutatingActions: 0,
+        }),
+      );
+      expect(plan.authority.retentionResolution).toBe('cohort-lifecycle');
+      expect(plan.authority.maxParticipantStateRetention).toBe(expected);
+      // The advertised ceiling must be one the lifecycle actually
+      // admits. This is the half the compile-time mapped type cannot
+      // check, because #57's runtime table is typed as a plain
+      // `ReadonlyArray<StateRetention>`.
+      const membership = plan.cohort.membership;
+      if (membership.kind === 'explicit') throw new Error('expected a lifecycle-named cohort');
+      expect(ALLOWED_STATE_RETENTION[membership.lifecycle]).toContain(expected);
+    },
+  );
 
   it('rejects a mutating-action ceiling above the module maximum', () => {
     expect(() => evaluate('rp-cadence', { maxMutatingActions: MAX_MUTATING_ACTIONS_PER_PLAN + 1 })).toThrow(
