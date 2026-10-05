@@ -72,8 +72,6 @@ export const TASK_CREATED_IN_A = 'Renew the passport before June';
 /** The title the returning cohort creates in version B. */
 export const TASK_CREATED_IN_B = 'Re-issue the parking permit';
 
-export const NO_RETENTION: RetainedMemory = { priorTitles: [] };
-
 /** The one longitudinal problem this scenario looks for, in full. */
 export const LONGITUDINAL_TITLE =
   'A returning user who added a task in version 2026.10.1 found the version 2026.10.2 ' +
@@ -171,6 +169,14 @@ export function createAcceptanceReasoner(
           };
         }
 
+        // The one cast in this deliverable, and it is the point of the
+        // control case: `evaluateJs` and friends are not in
+        // `ParticipantAction`, so a reasoner that returns one is a reasoner
+        // that has been given a response the type system says is
+        // impossible. Constructing that value is the whole control — a
+        // response the boundary must refuse — and it is reachable only
+        // when a caller passes `privilegedAttemptKind`, which only
+        // `executePrivilegedAttempt` does.
         if (options.privilegedAttemptKind !== undefined && cursor === 0) {
           cursor += 1;
           return {

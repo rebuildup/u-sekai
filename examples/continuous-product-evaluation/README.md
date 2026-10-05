@@ -41,8 +41,8 @@ Simulated, not human. See docs/non-reality.md and .../README.md.
          version A lists 3 task(s)
   [ok]   the A -> B promotion committed durably and moved the pointer
          pointer now on version 2026.10.2; re-applying is a no-op
-  [ok]   the earlier version survived the promotion
-         version A still lists 3 task(s)
+  [ok]   the earlier version survived the promotion, unchanged
+         version A listed 3 task(s) before the promotion and 3 after
   [ok]   the two environments share no mutable state
          version A lists [Find the help page, Draft the release checklist, Renew the passport before June], version B lists [Re-issue the parking permit]
   [ok]   the same Synthetic Identity spans both versions

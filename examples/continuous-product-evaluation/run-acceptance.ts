@@ -86,14 +86,14 @@ export function summarise(report: AcceptanceReport): AcceptanceExampleOutput {
   const stages: { stage: string; observed: string }[] = [];
   const unmet: string[] = [];
 
-  const expect_ = (stage: string, condition: boolean, observed: string): void => {
+  const check = (stage: string, condition: boolean, observed: string): void => {
     stages.push({ stage, observed });
     if (!condition) unmet.push(stage);
   };
 
   const { isolation, mixed, baseline, promotion, comparison } = report;
 
-  expect_(
+  check(
     'two live instances of one declared environment',
     isolation.keysDiffer &&
       isolation.declaredNames[0] === isolation.declaredNames[1] &&
@@ -101,32 +101,32 @@ export function summarise(report: AcceptanceReport): AcceptanceExampleOutput {
     `${isolation.declaredNames[0]} at ${isolation.declaredVersions[0]}, ${isolation.declaredNames[1]} at ${isolation.declaredVersions[1]}`,
   );
 
-  expect_(
+  check(
     'one cohort holding an ephemeral and a persistent identity',
     mixed.run.resolvedCohort.lifecycles.join(',') === 'ephemeral,persistent',
     `lifecycles: ${mixed.run.resolvedCohort.lifecycles.join(', ')}`,
   );
 
-  expect_(
+  check(
     'only the persistent identity retained state',
     mixed.ephemeralState.retainedState === undefined &&
       mixed.persistentState.retainedState !== undefined,
     `persistent interactions: ${String(mixed.persistentState.retainedState?.interactionCount ?? 0)}; ephemeral retained state: none`,
   );
 
-  expect_(
+  check(
     'accounts provisioned through the World Operator and released at cleanup',
     baseline.run.setup.status === 'provisioned' && baseline.run.cleanup?.status === 'cleaned',
     `setup=${baseline.run.setup.status}, cleanup=${String(baseline.run.cleanup?.status)}`,
   );
 
-  expect_(
+  check(
     'the cohort created a task in version A, through a real browser',
     baseline.world.titles.length > 0,
     `version A lists ${baseline.world.titles.length} task(s)`,
   );
 
-  expect_(
+  check(
     'the A -> B promotion committed durably and moved the pointer',
     promotion.applied &&
       promotion.reread.status === 'committed' &&
@@ -134,11 +134,14 @@ export function summarise(report: AcceptanceReport): AcceptanceExampleOutput {
     `pointer now on version ${promotion.activeVersionAfter}; re-applying is a no-op`,
   );
 
-  expect_(
-    'the earlier version survived the promotion',
-    promotion.worldAUnchangedByPromotion.titles.length > 0 &&
-      promotion.worldAUnchangedByPromotion.titles.join('|') === baseline.world.titles.join('|'),
-    `version A still lists ${promotion.worldAUnchangedByPromotion.titles.length} task(s)`,
+  check(
+    'the earlier version survived the promotion, unchanged',
+    promotion.worldAAroundPromotion.after.titles.length > 0 &&
+      promotion.worldAAroundPromotion.after.titles.join('|') ===
+        promotion.worldAAroundPromotion.before.titles.join('|') &&
+      promotion.worldAAroundPromotion.after.titles.join('|') === baseline.world.titles.join('|'),
+    `version A listed ${promotion.worldAAroundPromotion.before.titles.length} task(s) before the ` +
+      `promotion and ${promotion.worldAAroundPromotion.after.titles.length} after`,
   );
 
   // Two independent checks, because "the newer world is not the older
@@ -147,7 +150,7 @@ export function summarise(report: AcceptanceReport): AcceptanceExampleOutput {
   // and an over-eager promotion would have overwritten the older one.
   const versionATasks = baseline.world.titles;
   const versionBTasks = comparison.worldB.titles;
-  expect_(
+  check(
     'the two environments share no mutable state',
     versionBTasks.length > 0 &&
       versionBTasks.every((t) => !versionATasks.includes(t)) &&
@@ -155,7 +158,7 @@ export function summarise(report: AcceptanceReport): AcceptanceExampleOutput {
     `version A lists [${versionATasks.join(', ')}], version B lists [${versionBTasks.join(', ')}]`,
   );
 
-  expect_(
+  check(
     'the same Synthetic Identity spans both versions',
     comparison.stateAfterB.identity.id === baseline.stateAfterA.identity.id &&
       comparison.stateAfterB.observations.length === 2,
@@ -164,7 +167,7 @@ export function summarise(report: AcceptanceReport): AcceptanceExampleOutput {
       .join(' then ')}`,
   );
 
-  expect_(
+  check(
     'the comparison run produced an evidence-backed longitudinal finding',
     comparison.findings.length > 0,
     `${comparison.findings.length} finding(s)`,

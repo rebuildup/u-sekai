@@ -137,7 +137,6 @@ export interface AcceptanceReport {
   };
   readonly mixed: {
     readonly run: AcceptanceRunOutput['result'];
-    readonly worldBefore: RenderedWorld;
     readonly worldAfter: RenderedWorld;
     readonly persistentState: IdentityState;
     readonly ephemeralState: IdentityState;
@@ -155,7 +154,13 @@ export interface AcceptanceReport {
     readonly reapplyApplied: boolean;
     readonly activeVersionAfter: string;
     readonly baselineVersionStillAnswering: boolean;
-    readonly worldAUnchangedByPromotion: RenderedWorld;
+    /**
+     * Version A's rendered world on both sides of the promotion. Two
+     * reads rather than one, so "the promotion did not touch the
+     * baseline version" is a comparison and not an inference from a
+     * single sample taken after the fact.
+     */
+    readonly worldAAroundPromotion: { readonly before: RenderedWorld; readonly after: RenderedWorld };
   };
   readonly comparison: {
     readonly run: AcceptanceRunOutput['result'];
@@ -295,7 +300,6 @@ async function driveAcceptanceScenario(
 
   // --- Stage 2: the returning cohort's first version. This run is the
   // baseline the comparison run will be joined against.
-  const worldBeforeBaseline = await readWorld(pair.before.baseUrl);
   const planA = buildScenarioPlan({
     programId: RETURNING_PROGRAM_ID,
     cohortId: RETURNING_COHORT_ID,
@@ -333,7 +337,6 @@ async function driveAcceptanceScenario(
   const activeVersionAfter = pair.active().version;
   const worldAStillAnswering = await readWorld(pair.before.baseUrl);
   const worldAAfterPromotion = await readWorld(pair.before.baseUrl);
-  void worldABeforePromotion;
 
   // --- Stage 4: the same cohort, the same identity id, the newer
   // version, joined against the run above.
@@ -377,7 +380,6 @@ async function driveAcceptanceScenario(
     isolation,
     mixed: {
       run: mixed.result,
-      worldBefore: worldBeforeBaseline,
       worldAfter: worldAfterMixed,
       persistentState,
       ephemeralState,
@@ -395,7 +397,7 @@ async function driveAcceptanceScenario(
       reapplyApplied: reapply.outcome.applied,
       activeVersionAfter,
       baselineVersionStillAnswering: worldAStillAnswering.baseUrl === pair.before.baseUrl,
-      worldAUnchangedByPromotion: worldAAfterPromotion,
+      worldAAroundPromotion: { before: worldABeforePromotion, after: worldAAfterPromotion },
     },
     comparison: {
       run: comparison.result,
@@ -562,16 +564,17 @@ export async function resolveEvidenceFiles(
   artifactDir: string,
   locators: ReadonlyArray<string>,
 ): Promise<ReadonlyArray<{ readonly locator: string; readonly exists: boolean }>> {
-  const out: { locator: string; exists: boolean }[] = [];
-  for (const locator of locators) {
-    const file = locator.split('#')[0] ?? locator;
-    if (file.length === 0) continue;
-    try {
-      await fs.stat(path.join(artifactDir, file));
-      out.push({ locator, exists: true });
-    } catch {
-      out.push({ locator, exists: false });
-    }
-  }
-  return out;
+  const targets = locators
+    .map((locator) => ({ locator, file: locator.split('#')[0] ?? locator }))
+    .filter((entry) => entry.file.length > 0);
+  return Promise.all(
+    targets.map(async ({ locator, file }) => {
+      try {
+        await fs.stat(path.join(artifactDir, file));
+        return { locator, exists: true };
+      } catch {
+        return { locator, exists: false };
+      }
+    }),
+  );
 }

@@ -334,8 +334,14 @@ describe('#67 0.4.0 service acceptance: a persistent cohort across A -> B', () =
     // evidence gathered against A stays evidence about something that
     // still exists.
     expect(promotion.baselineVersionStillAnswering).toBe(true);
-    expect(promotion.worldAUnchangedByPromotion.titles).toEqual(baseline.world.titles);
-    expect(promotion.worldAUnchangedByPromotion.titles).toContain(TASK_CREATED_IN_A);
+    // Two reads around the promotion, compared. A single read after the
+    // fact could not tell "the promotion did not touch A" from "A had
+    // already lost the task"; this can.
+    expect(promotion.worldAAroundPromotion.after.titles).toEqual(
+      promotion.worldAAroundPromotion.before.titles,
+    );
+    expect(promotion.worldAAroundPromotion.after.titles).toEqual(baseline.world.titles);
+    expect(promotion.worldAAroundPromotion.after.titles).toContain(TASK_CREATED_IN_A);
 
     // Applying it again is observably a re-run, not a second
     // transition: same key, same record, `applied: false`.

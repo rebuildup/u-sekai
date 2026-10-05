@@ -21,13 +21,12 @@
 
 import {
   appendDisposition,
-  computeKpiSnapshot,
   emptyLedger,
   kpiSnapshotFromOutcomes,
   type DispositionLedger,
   type KpiSnapshot,
 } from '../../../src/feedback/index.js';
-import { parseDisposition, type Disposition, type Finding, type ReviewOutcome } from '../../../src/review/index.js';
+import { parseDisposition, type Disposition, type ReviewOutcome } from '../../../src/review/index.js';
 
 /** The customer workspace that records the decision. Never a secret. */
 export const CUSTOMER_ACTOR = 'acme-product-workspace';
@@ -70,13 +69,6 @@ export function makeDisposition(input: DispositionInput): Disposition {
 
 export function recordDisposition(ledger: DispositionLedger, disposition: Disposition): DispositionLedger {
   return appendDisposition(ledger, disposition);
-}
-
-export function kpiFor(
-  findings: ReadonlyArray<Finding>,
-  ledger: DispositionLedger,
-): KpiSnapshot {
-  return computeKpiSnapshot({ findings, ledger });
 }
 
 /**
