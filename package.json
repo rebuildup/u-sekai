@@ -44,7 +44,8 @@
     "release:publish": "node scripts/verify-release.mjs --apply"
   },
   "dependencies": {
-    "playwright": "^1.48.0"
+    "playwright": "^1.48.0",
+    "yaml": "^2.9.1"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",
