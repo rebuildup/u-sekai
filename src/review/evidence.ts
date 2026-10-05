@@ -60,12 +60,36 @@ import {
  * involve a model at all and can therefore contradict a model finding
  * outright; `productionSignal` and `humanReport` are customer-side
  * channels that u-sekai does not own and cannot re-derive.
+ *
+ * ### `productResponse` vs `productionSignal` — not the same thing
+ *
+ * These two are one word apart and mean opposite things, so the
+ * distinction is load-bearing:
+ *
+ * - `productResponse` is the product under test **answering**: it
+ *   refused a duplicate account, returned a validation error, rejected
+ *   a permission. The observation is u-sekai's own interaction with
+ *   the product, and u-sekai can re-derive it. #59's World Operator
+ *   projects this as `channel: 'productSignal'`; the concept is the
+ *   same one and the name here is deliberately distinct from
+ *   #59's so the two do not read as aliases.
+ * - `productionSignal` is the customer's **production environment**
+ *   reporting: telemetry, an incident, a support ticket. u-sekai does
+ *   not own it and cannot re-derive it, and a finding citing it is
+ *   making a claim the customer can check but u-sekai cannot.
+ *
+ * A finding may cite either, and citing both is normal: a
+ * `productResponse` shows the refusal happened, a `productionSignal`
+ * shows it mattered. Collapsing them would let a claim look
+ * independently corroborated when it is only the same observation
+ * recorded twice.
  */
 export const EVIDENCE_CHANNELS = [
   'participantSelfReport',
   'observer',
   'structuredTrace',
   'deterministicCheck',
+  'productResponse',
   'productionSignal',
   'humanReport',
   'environmentProbe',
