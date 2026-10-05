@@ -154,6 +154,34 @@ describe('re-running an evaluation does not corrupt existing identities', () => 
     expect(reloaded.observations).toHaveLength(1);
   });
 
+  it('refuses a re-declaration whose identity differs, without touching history', async () => {
+    const service = makeService(dir);
+    const identity = makeIdentity('persistent', {
+      id: 'idn-amend',
+      stateRef: 'amend:state',
+      persona: 'Original persona.',
+    });
+    await service.declareIdentity(identity);
+    await service.touch(identity.id, '2026-10-01T00:00:00.000Z');
+    const before = await restart(dir).loadIdentity(identity.id);
+
+    // Same id, different declaration. Applying it silently could strand
+    // state that #57's retention table promised; ignoring it silently
+    // would mean the edit never takes effect.
+    await expect(
+      service.declareIdentity(
+        makeIdentity('persistent', {
+          id: 'idn-amend',
+          stateRef: 'amend:state',
+          persona: 'A completely different persona.',
+        }),
+      ),
+    ).rejects.toThrow(/already stored with a different declaration/);
+
+    const after = await restart(dir).loadIdentity(identity.id);
+    expect(after).toEqual(before);
+  });
+
   it('a full release transition leaves the identity in a clean, well-formed state', async () => {
     const service = makeService(dir);
     const identity = makeIdentity('release', { id: 'idn-full', stateRef: 'full:state' });

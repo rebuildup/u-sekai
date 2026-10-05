@@ -59,6 +59,7 @@ import {
   type RecordedObservation,
 } from './identity.js';
 import {
+  canonicalJson,
   cohortDefinitionDigest,
   parseCohortState,
   resolveMembership,
@@ -124,9 +125,15 @@ export class CohortStateService {
   /**
    * Create an identity record, or return the one already stored.
    *
-   * Idempotent by design: declaring the same identity twice returns the
-   * existing state untouched rather than resetting it, so a configuration
+   * Idempotent for an *identical* declaration: redeclaring the same
+   * identity returns the existing state untouched, so a configuration
    * reload cannot wipe an identity's accumulated history.
+   *
+   * A declaration that **differs** from the stored one is refused rather
+   * than applied or ignored. Silently keeping the old one would mean an
+   * edited persona or lifecycle never takes effect and the caller is told
+   * nothing; silently applying it would let a lifecycle change strand the
+   * retained state that #57's retention table promised.
    */
   async declareIdentity(
     identity: SyntheticIdentity,
@@ -134,7 +141,17 @@ export class CohortStateService {
   ): Promise<IdentityState> {
     const key = identityStateKey(identity.id);
     const existing = await this.tryLoadIdentity(identity.id);
-    if (existing !== undefined) return existing;
+    if (existing !== undefined) {
+      if (canonicalJson(existing.identity) !== canonicalJson(identity)) {
+        throw new CohortStateError(
+          'already_exists',
+          `identity ${identity.id} is already stored with a different declaration; its accumulated state is bound to the stored lifecycle, so amend the record explicitly rather than re-declaring it`,
+          'identity',
+          { identityId: identity.id },
+        );
+      }
+      return existing;
+    }
 
     const state: IdentityState = {
       ...initialIdentityState(identity),
@@ -237,12 +254,57 @@ export class CohortStateService {
   /* Cohorts                                                                 */
   /* ---------------------------------------------------------------------- */
 
-  /** Create a cohort record, or return the one already stored. */
+  /**
+   * Create a cohort record, or return the one already stored.
+   *
+   * Idempotent for an identical definition. A cohort whose definition
+   * **differs** from the stored one is refused, because its resolved
+   * membership was derived from the old rule: applying the new definition
+   * silently would leave a member list that no longer matches the
+   * definition it claims to come from. Use
+   * {@link updateCohortDefinition} to change it deliberately.
+   */
   async declareCohort(cohort: SyntheticCohort): Promise<CohortState> {
     const key = cohortStateKey(cohort.id);
     const existing = await this.tryLoadCohort(cohort.id);
-    if (existing !== undefined) return existing;
+    if (existing !== undefined) {
+      if (cohortDefinitionDigest(existing.cohort) !== cohortDefinitionDigest(cohort)) {
+        throw new CohortStateError(
+          'already_exists',
+          `cohort ${cohort.id} is already stored with a different definition; its members were resolved from the stored rule, so call updateCohortDefinition to change it deliberately`,
+          'cohort',
+          { cohortId: cohort.id },
+        );
+      }
+      return existing;
+    }
 
+    const state: CohortState = Object.freeze({
+      cohort,
+      definitionDigest: cohortDefinitionDigest(cohort),
+    });
+    return this.put('cohort', key, state, COHORT_CODEC);
+  }
+
+  /**
+   * Replace a cohort's definition, discarding its resolved membership.
+   *
+   * The stale member list is dropped rather than carried over: it was
+   * resolved from the previous rule, so keeping it would let a durable
+   * record claim members its definition does not select. The caller
+   * re-resolves by calling `resolveCohort`.
+   */
+  async updateCohortDefinition(cohort: SyntheticCohort): Promise<CohortState> {
+    const key = cohortStateKey(cohort.id);
+    const existing = await this.tryLoadCohort(cohort.id);
+    if (existing === undefined) {
+      throw new CohortStateError(
+        'cohort_not_found',
+        `no cohort record for ${cohort.id} in this store`,
+        'cohort.id',
+        { cohortId: cohort.id },
+      );
+    }
     const state: CohortState = Object.freeze({
       cohort,
       definitionDigest: cohortDefinitionDigest(cohort),

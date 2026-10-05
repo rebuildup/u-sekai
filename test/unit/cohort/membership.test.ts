@@ -233,6 +233,58 @@ describe('a cohort is reproducible from its persisted definition', () => {
     expect(second.definitionDigest).toBe(first.definitionDigest);
     expect(await restart(dir).loadAllCohorts()).toHaveLength(1);
   });
+
+  it('refuses a re-declaration whose definition differs', async () => {
+    const service = makeService(dir);
+    await service.declareCohort(
+      makeLifecycleCohort('persistent', { id: 'coh-conflict', name: 'Original' }),
+    );
+
+    // Same id, different definition. Silently keeping the old one would
+    // mean an edited cohort config never takes effect.
+    await expect(
+      service.declareCohort(
+        makeLifecycleCohort('persistent', { id: 'coh-conflict', name: 'Renamed' }),
+      ),
+    ).rejects.toThrow(/already stored with a different definition/);
+
+    // ...and the stored definition is untouched.
+    const stored = await restart(dir).loadCohort(asCohortId('coh-conflict'));
+    expect(stored.cohort.name).toBe('Original');
+  });
+
+  it('changes a definition deliberately and drops the stale membership', async () => {
+    const ids = await seedPersistent(3);
+    const service = makeService(dir);
+    const cohort = makeLifecycleCohort('persistent', { id: 'coh-narrow', name: 'Wide' });
+    await service.declareCohort(cohort);
+    const wide = await service.resolveCohort(cohort.id, {
+      resolvedAt: '2026-10-01T00:00:00.000Z',
+    });
+    expect(wide.membership?.members).toHaveLength(3);
+
+    // A narrower rule, applied through the explicit path.
+    await service.updateCohortDefinition(
+      makeExplicitCohort([ids[0]!], { id: 'coh-narrow', name: 'Narrow' }),
+    );
+    const updated = await restart(dir).loadCohort(cohort.id);
+    // The member list was resolved from the *old* rule, so it is gone
+    // rather than left claiming to match a definition that no longer does.
+    expect(updated.membership).toBeUndefined();
+    expect(updated.cohort.membership.kind).toBe('explicit');
+
+    const reresolved = await service.resolveCohort(cohort.id, {
+      resolvedAt: '2026-10-02T00:00:00.000Z',
+    });
+    expect(reresolved.membership?.members).toEqual([ids[0]]);
+  });
+
+  it('refuses to update a cohort that was never declared', async () => {
+    const service = makeService(dir);
+    await expect(
+      service.updateCohortDefinition(makeLifecycleCohort('persistent', { id: 'coh-absent' })),
+    ).rejects.toThrow(/no cohort record for coh-absent/);
+  });
 });
 
 describe('resolution is a pure function', () => {
