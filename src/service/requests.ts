@@ -396,19 +396,31 @@ export function parseGetFindingsRequest(input: unknown, field = 'request'): GetF
       `${field}.programId`,
     );
   }
-  const scopes = [result.jobId !== undefined, result.programId !== undefined].filter(Boolean).length;
-  if (scopes === 0) {
+  // Exactly one scope, and `productId` only narrows a program scope.
+  // Naming a job *and* a program is contradictory, and naming a
+  // product alongside a job would be silently ignored — a caller who
+  // wrote both would get one answer and believe it was the other.
+  const namedJob = result.jobId !== undefined;
+  const namedProgram = result.programId !== undefined;
+  if (!namedJob && !namedProgram) {
     throw new ServiceError(
       `${field} must scope the query with jobId, or with programId`,
       'invalid-request',
       field,
     );
   }
-  if (result.jobId !== undefined && result.programId !== undefined) {
+  if (namedJob && namedProgram) {
     throw new ServiceError(
       `${field} must name either a job or a program, not both`,
       'invalid-request',
       field,
+    );
+  }
+  if (namedJob && result.productId !== undefined) {
+    throw new ServiceError(
+      `${field}.productId narrows a program scope and cannot be combined with jobId`,
+      'invalid-request',
+      `${field}.productId`,
     );
   }
   return result;

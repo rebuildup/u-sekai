@@ -268,8 +268,13 @@ describe('#66 duplicate trigger submission is idempotent', () => {
   });
 
   it('re-submitting a declared job id for a *different* plan is refused, not silently merged', () => {
-    const { service } = setup();
-    service.submitTriggerEvaluation(principal(), manualTrigger('jb-collide', 'dlv-collide-a', AT));
+    const { service, store } = setup();
+    const first = service.submitTriggerEvaluation(
+      principal(),
+      manualTrigger('jb-collide', 'dlv-collide-a', AT),
+    );
+    if (!first.accepted) throw new Error('expected the first submission to be accepted');
+    const planBefore = store.planForJob('tn-acme' as never, 'jb-collide' as never);
 
     try {
       service.submitTriggerEvaluation(
@@ -279,12 +284,41 @@ describe('#66 duplicate trigger submission is idempotent', () => {
       throw new Error('expected a refusal');
     } catch (error) {
       if (!isServiceError(error)) throw error;
-      // Either refusal is correct: the delivery differs so the plan
-      // differs, and one job id cannot name two evaluations. The point
-      // is that it does not quietly hand back the first job as if the
-      // second request had been scheduled.
-      expect(['job-already-exists', 'idempotency-conflict']).toContain(error.code);
+      expect(error.code).toBe('job-already-exists');
     }
+
+    // The regression that matters: the refused submission must have
+    // written *nothing*. An earlier version bound the new plan key and
+    // overwrote the existing job's stored plan before raising, so a
+    // queued job would later have run a different evaluation from the
+    // one it was created and charged for.
+    expect(store.planForJob('tn-acme' as never, 'jb-collide' as never)).toBe(planBefore);
+    expect(store.jobIdForPlanKey('tn-acme' as never, first.job.planKey)).toBe('jb-collide');
+    expect(service.listJobs(principal(), { tenantId: 'tn-acme' })).toHaveLength(1);
+    expect(ledgerOf(store)?.consumedKeys).toHaveLength(1);
+  });
+
+  it('a refused duplicate leaves the existing job runnable with its own plan', async () => {
+    const { service, executor } = setup();
+    const first = service.submitTriggerEvaluation(
+      principal(),
+      manualTrigger('jb-collide-run', 'dlv-collide-run-a', AT),
+    );
+    if (!first.accepted) throw new Error('expected acceptance');
+    expect(() =>
+      service.submitTriggerEvaluation(
+        principal(),
+        manualTrigger('jb-collide-run', 'dlv-collide-run-b', AT),
+      ),
+    ).toThrow();
+
+    // The queued job still runs, and it runs *its* plan.
+    const done = await service.runJob(principal(), {
+      tenantId: 'tn-acme',
+      jobId: 'jb-collide-run',
+    });
+    expect(done.status).toBe('succeeded');
+    expect(executor.calls).toEqual([{ jobId: 'jb-collide-run', runId: 'jb-collide-run' }]);
   });
 
   it('the ledger the service uses is the stored one, not a fresh zero-spend ledger each call', () => {

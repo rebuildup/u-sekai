@@ -204,6 +204,25 @@ describe('#66 failure visibility: an empty result is not a passing result', () =
     expect(report.unexecuted[0]?.reason).toContain('provider 503');
   });
 
+  it('refuses a findings query that names a job and a program together', () => {
+    const { service } = setup();
+    // Naming both is contradictory, and naming a product alongside a job
+    // would be silently dropped — a caller who wrote both would get one
+    // answer and believe it was the other.
+    for (const request of [
+      { tenantId: 'tn-acme', jobId: 'jb-vis-queued', programId: PROGRAM_ID },
+      { tenantId: 'tn-acme', jobId: 'jb-vis-queued', productId: PRODUCT_ID },
+    ]) {
+      try {
+        service.getFindings(principal(), request);
+        throw new Error('expected a refusal');
+      } catch (error) {
+        if (!isServiceError(error)) throw error;
+        expect(error.code).toBe('invalid-request');
+      }
+    }
+  });
+
   it('a setup failure is never merged into findings', async () => {
     const failure = makeSetupFailure('jb-vis-sf', 'the staging environment refused the connection');
     const { service } = setup(fakeExecutor({ findings: [], setupFailures: [failure] }));

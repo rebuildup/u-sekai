@@ -516,6 +516,34 @@ export function createService(config: ServiceConfig): EvaluationControlPlane {
     }
 
     const plan = decision.plan;
+
+    // Resolve every conflict as a *pure read* before writing anything.
+    //
+    // The write order below matters and was wrong once: binding the plan
+    // key and storing the plan before inserting the job meant a
+    // submission that reused an existing job id had already rebound the
+    // plan key and **overwritten that job's stored plan** by the time
+    // `job-already-exists` was raised. A queued job would then have run
+    // a different evaluation from the one it was created for. Reads
+    // first, writes second, and no `await` between them, closes that.
+    const existingJob = store.getJob(raw.tenantId, raw.jobId);
+    if (existingJob !== undefined) {
+      throw new ServiceError(
+        `job ${raw.jobId} already exists for ${raw.tenantId}`,
+        'job-already-exists',
+        'request.jobId',
+        { jobId: raw.jobId, existingPlanKey: existingJob.planKey },
+      );
+    }
+    const alreadyBound = store.jobIdForPlanKey(raw.tenantId, plan.planKey);
+    if (alreadyBound !== undefined && alreadyBound !== raw.jobId) {
+      // Two job ids claiming one evaluation. The first binding wins and
+      // the second caller is handed it: silently keeping the first is
+      // correct here precisely because the plan is the same evaluation,
+      // and inventing a second job for it would double-charge.
+      return { accepted: true, job: requireJob(store, raw.tenantId, alreadyBound), deduplicated: true };
+    }
+
     const job = createJob({
       tenantId: raw.tenantId,
       jobId: raw.jobId,
@@ -526,19 +554,9 @@ export function createService(config: ServiceConfig): EvaluationControlPlane {
       submittedAt: now,
     });
 
-    // Bind first, write second. A conflicting binding is refused rather
-    // than overwritten: two job ids claiming one evaluation is an
-    // upstream bug, and silently keeping the first would leave the
-    // second caller believing its job was scheduled.
-    const bound = bindPlanKey(store, raw.tenantId, plan.planKey, raw.jobId);
-    if (bound !== raw.jobId) {
-      const existing = requireJob(store, raw.tenantId, bound);
-      return { accepted: true, job: existing, deduplicated: true };
-    }
-    // The plan is stored with the job, so the run executes the
-    // evaluation that was reserved and charged rather than one
-    // re-planned from a program that may since have been edited.
-    store.putPlan(raw.tenantId, raw.jobId, plan);
+    // `insertJob` re-checks the id atomically. Belt and braces rather
+    // than the primary guard, because the primary guard is the pure
+    // read above and this one is the invariant.
     if (!store.insertJob(raw.tenantId, job)) {
       throw new ServiceError(
         `job ${raw.jobId} already exists for ${raw.tenantId}`,
@@ -547,6 +565,12 @@ export function createService(config: ServiceConfig): EvaluationControlPlane {
         { jobId: raw.jobId },
       );
     }
+    // The plan is stored with the job, so the run executes the
+    // evaluation that was reserved and charged rather than one
+    // re-planned from a program that may since have been edited.
+    store.putPlan(raw.tenantId, raw.jobId, plan);
+    // Two job ids for one plan key is refused rather than overwritten.
+    bindPlanKey(store, raw.tenantId, plan.planKey, raw.jobId);
     // #62's advanced ledger is committed only now, and only for a
     // `due` decision. A duplicate or a not-due never charges.
     store.putLedger(raw.tenantId, decision.ledger);
@@ -1110,9 +1134,19 @@ function replaceModel(
  * overwriting, because a caller that believes it updated a program's
  * triggers while the stored model still has the old ones would get a
  * control plane whose behaviour does not match its configuration.
+ *
+ * ## Compared canonically, not by serialisation
+ *
+ * `JSON.stringify` on the two models would compare **array order**, so
+ * re-registering the same product with its environments in a different
+ * order would be refused as a change. That is a false refusal of an
+ * identical declaration, and it is the kind of error that reads as
+ * "the service is finicky about ordering" rather than as a bug. So each
+ * collection is sorted by durable id first, which is a total order and
+ * independent of how the caller happened to list things.
  */
 function assertSameRegistration(existing: ProductModel, incoming: ProductModel, tenantId: TenantId): void {
-  if (JSON.stringify(existing) === JSON.stringify(incoming)) {
+  if (canonicalForm(existing) === canonicalForm(incoming)) {
     return;
   }
   throw new ServiceError(
@@ -1122,6 +1156,21 @@ function assertSameRegistration(existing: ProductModel, incoming: ProductModel, 
     'request.product',
     { productId: incoming.product.id },
   );
+}
+
+function canonicalForm(model: ProductModel): string {
+  const byId = <T extends { readonly id: string }>(items: ReadonlyArray<T>): T[] =>
+    [...items].sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+  return JSON.stringify({
+    product: model.product,
+    environments: byId(model.environments),
+    identities: byId(model.identities),
+    cohorts: byId(model.cohorts),
+    programs: byId(model.programs).map((p) => ({
+      ...p,
+      environmentIds: [...p.environmentIds].sort(),
+    })),
+  });
 }
 
 /**

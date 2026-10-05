@@ -312,6 +312,50 @@ describe('#66 Product and Environment registration', () => {
     expect(service.getProduct(principal({ tenantId: 'tn-other' }), PRODUCT_ID)).toEqual(b);
   });
 
+  it('re-registering the same declaration in a different order is idempotent, not a change', () => {
+    const service = buildService({ dir: '/tmp/svc-reg-order' });
+    const first = service.registerProduct(principal(), registrationBody(BASE_URL));
+    // A second environment, so the reordering is observable.
+    service.registerEnvironment(principal(), {
+      tenantId: 'tn-acme',
+      productId: PRODUCT_ID,
+      environment: parseEnvironment({
+        id: 'env-production-like',
+        productId: PRODUCT_ID,
+        name: 'Production-like',
+        environmentClass: 'productionLike',
+        deploymentKind: 'versioned',
+        endpoint: { baseUrl: 'https://prod.example' },
+      }),
+    });
+
+    const reordered = registrationBody(BASE_URL);
+    const again = service.registerProduct(principal(), {
+      ...reordered,
+      // Same entities, opposite order, and the extra one included.
+      environments: [
+        {
+          id: 'env-production-like',
+          productId: PRODUCT_ID,
+          name: 'Production-like',
+          environmentClass: 'productionLike',
+          deploymentKind: 'versioned',
+          endpoint: { baseUrl: 'https://prod.example' },
+        },
+        ...reordered.environments,
+      ],
+    });
+
+    // An ordering difference is not a declaration difference. Comparing
+    // the raw serialisations would refuse this, which reads as "the
+    // service is finicky about ordering" rather than as a bug.
+    expect(again.environments.map((e) => e.id)).toEqual([
+      'env-staging',
+      'env-production-like',
+    ]);
+    expect(first.environments).toHaveLength(1);
+  });
+
   it('requires the capability to register, and does not infer it from a neighbouring one', () => {
     const service = buildService({ dir: '/tmp/svc-reg-13' });
     const readOnly = principal({ capabilities: ['product:read', 'job:read'] });
