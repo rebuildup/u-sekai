@@ -160,6 +160,25 @@ export class CohortStateService {
     return this.put('identity', key, state, IDENTITY_CODEC);
   }
 
+  /**
+   * The revision currently stored for one identity.
+   *
+   * `IdentityState` deliberately carries no revision — the revision is
+   * an envelope fact, not a property of the identity — so a caller that
+   * wants to write under a guard has no other way to learn what to
+   * guard against. Reading it and passing it to
+   * {@link SaveOptions.expectedRevision} is the whole optimistic-concurrency
+   * protocol, and a protocol whose first half is unreachable is not a
+   * protocol.
+   *
+   * `undefined` means the store holds no record for this id, which is
+   * the state a first write legitimately expects.
+   */
+  async currentRevision(id: SyntheticIdentityId): Promise<number | undefined> {
+    const record = await this.readRecord('identity', identityStateKey(id));
+    return record?.revision;
+  }
+
   /** Load an identity. Raises `identity_not_found` when absent. */
   async loadIdentity(id: SyntheticIdentityId): Promise<IdentityState> {
     const state = await this.tryLoadIdentity(id);
@@ -392,7 +411,7 @@ export class CohortStateService {
     if (options.expectedRevision !== undefined && current !== undefined) {
       if (current.revision !== options.expectedRevision) {
         throw new CohortStateError(
-          'invalid_transition',
+          'revision_conflict',
           `${kind} record ${key} is at revision ${current.revision}, not the expected ${options.expectedRevision}`,
           `${kind}.record.revision`,
           { key, expected: options.expectedRevision, actual: current.revision },

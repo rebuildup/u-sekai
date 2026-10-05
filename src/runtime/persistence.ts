@@ -88,7 +88,7 @@ export interface ResolvedCohort {
  * would understate the very cohort the finding lineage names.
  */
 export async function resolveCohort(input: ResolveCohortInput): Promise<ResolvedCohort> {
-  const state = await guard('cohort.resolve', () =>
+  const state = await guard('cohort.resolve', undefined, () =>
     input.service.resolveCohort(input.cohortId, { resolvedAt: input.resolvedAt }),
   );
 
@@ -109,7 +109,7 @@ export async function resolveCohort(input: ResolveCohortInput): Promise<Resolved
 
   const members: SyntheticIdentity[] = [];
   for (const id of selected) {
-    const loaded = await guard('identity.loadIdentity', () => input.service.loadIdentity(id));
+    const loaded = await guard('identity.loadIdentity', id, () => input.service.loadIdentity(id));
     members.push(loaded.identity);
   }
 
@@ -198,7 +198,7 @@ export async function openReleaseWindows(
 
   const opened: SyntheticIdentityId[] = [];
   for (const member of input.members) {
-    await guard('identity.openTransition', () =>
+    await guard('identity.openTransition', member.id, () =>
       input.service.openTransition(member.id, {
         fromVersion: previous.version,
         openedAt: input.openedAt,
@@ -239,6 +239,35 @@ export interface PersistRunResult {
  * caller uses for a dry run. The default is `true`, because a run that
  * observed a cohort and recorded nothing about it would make the next
  * release-transition join impossible.
+ *
+ * ## Every write here is guarded, and there is no way to opt out
+ *
+ * Each write reads the record's current revision and passes it as
+ * #60's `expectedRevision`, so a writer whose view of the record is no
+ * longer current is refused instead of overwriting. This is not an
+ * optional extra: a guard that a caller may leave off is a guard whose
+ * absence is indistinguishable from its presence, and #92 exists
+ * because a perfectly good guard was left off here for a whole release.
+ * There is deliberately no `expectedRevision` field on
+ * {@link PersistRunInput}, because a field that can be omitted is a
+ * field that will be.
+ *
+ * The alternative — an explicit `'guarded' | 'unconditional'` flag —
+ * was considered and rejected. It restores the ability to persist
+ * unguarded, which is the ability that caused this defect, and there is
+ * no production caller that needs it: `execute.ts` is the only one, and
+ * it persists runs of identities that another run may be evaluating at
+ * the same moment. A caller that genuinely must write unguarded has
+ * #60's `recordRun` and its `SaveOptions` directly, and making that a
+ * deliberate step outside the runtime is the point.
+ *
+ * ## What a caller sees when a conflict happens
+ *
+ * A `RuntimeIntegrationError` with code `revisionConflict`, carrying the
+ * identity, the operation, and the expected and actual revisions. The
+ * write is not applied and not retried. Issue #92 leaves retry-vs-fail
+ * to #60/#66, so this decides neither: it makes the conflict loud,
+ * typed and diagnosable, and leaves the policy to whoever owns it.
  */
 export async function persistRun(input: PersistRunInput): Promise<PersistRunResult> {
   if (input.persistObservations === false) {
@@ -258,13 +287,34 @@ export async function persistRun(input: PersistRunInput): Promise<PersistRunResu
   const toVersion = input.plan.lineage?.current.version;
 
   for (const member of input.members) {
-    await guard('identity.recordRun', () =>
-      input.service.recordRun(member.id, {
-        environmentId: input.environmentId,
-        version: input.version,
-        observedAt: input.observedAt,
-        runId: input.runId,
-      }),
+    // Read the revision, then write under it. #60 re-reads inside its
+    // own read-modify-write and compares, so the window this closes is
+    // exactly the one between this read and that write — which is where
+    // the second run of an identity used to slip through and erase the
+    // first.
+    //
+    // An absent record reads as revision 0, and that is a truthful
+    // encoding rather than a convenience: #60 rejects any stored
+    // revision below 1, so no real record can collide with it. It also
+    // closes the create-race that omitting the guard would leave open —
+    // if another writer creates the record in the window, its revision
+    // is at least 1 and the write is refused. Passing `undefined` here
+    // instead would skip the check entirely and clobber it, which is the
+    // absence-as-permission shape #92 exists to remove.
+    const observed = await guard('identity.currentRevision', member.id, () =>
+      input.service.currentRevision(member.id),
+    );
+    await guard('identity.recordRun', member.id, () =>
+      input.service.recordRun(
+        member.id,
+        {
+          environmentId: input.environmentId,
+          version: input.version,
+          observedAt: input.observedAt,
+          runId: input.runId,
+        },
+        { expectedRevision: observed ?? 0 },
+      ),
     );
     persisted.push(member.id);
 
@@ -273,19 +323,29 @@ export async function persistRun(input: PersistRunInput): Promise<PersistRunResu
     // declared retention is `none`. #60's `touchRetainedState` raises
     // in that case, so the filter is what keeps a legitimate
     // point-in-time run over ephemeral identities from failing.
+    //
+    // The touch is a second write against the same record, so it needs
+    // its own revision: `recordRun` above advanced it.
     if (member.capability.stateRetention !== 'none') {
-      await guard('identity.touch', () => input.service.touch(member.id, input.observedAt));
+      const afterRecordRun = await guard('identity.currentRevision', member.id, () =>
+        input.service.currentRevision(member.id),
+      );
+      await guard('identity.touch', member.id, () =>
+        input.service.touch(member.id, input.observedAt, { expectedRevision: afterRecordRun ?? 0 }),
+      );
     } else {
       skipped.push(member.id);
     }
 
-    const state = await guard('identity.loadIdentity', () => input.service.loadIdentity(member.id));
+    const state = await guard('identity.loadIdentity', member.id, () =>
+      input.service.loadIdentity(member.id),
+    );
     states.push(state);
   }
 
   if (input.closeTransition === true && toVersion !== undefined) {
     for (const member of input.members) {
-      await guard('identity.closeTransition', () =>
+      await guard('identity.closeTransition', member.id, () =>
         input.service.closeTransition(member.id, { toVersion }),
       );
       closed.push(member.id);
@@ -309,12 +369,37 @@ export async function persistRun(input: PersistRunInput): Promise<PersistRunResu
  * into a `SetupFailure` either — a `SetupFailure` says the *product*
  * could not be evaluated, and a corrupt identity record is neither that
  * nor a product finding.
+ *
+ * A revision conflict is separated out because it is not a contract
+ * violation. Nothing was called wrongly; the record simply moved. The
+ * message says so, and names the identity, so an operator reading a log
+ * can tell "this run lost a race" from "this run was written wrongly".
+ * The runtime states the fact and stops. Whether to retry is #92's
+ * open question and belongs to #60/#66, so no retry is attempted and
+ * none is implied.
  */
-async function guard<T>(field: string, op: () => Promise<T>): Promise<T> {
+async function guard<T>(
+  field: string,
+  identityId: SyntheticIdentityId | undefined,
+  op: () => Promise<T>,
+): Promise<T> {
   try {
     return await op();
   } catch (error) {
     if (isCohortStateError(error)) {
+      if (error.code === 'revision_conflict') {
+        const expected = error.detail['expected'];
+        const actual = error.detail['actual'];
+        throw new RuntimeIntegrationError(
+          `durable cohort state refused ${field} for ${identityId}: the record advanced from ` +
+            `revision ${String(expected)} to ${String(actual)} after this run read it, so the write ` +
+            'was not applied. Another run is persisting the same identity concurrently; whether to ' +
+            'retry or fail is a caller decision.',
+          'revisionConflict',
+          field,
+          { code: error.code, identityId, expected, actual },
+        );
+      }
       throw new RuntimeIntegrationError(
         `durable cohort state rejected ${field}: ${error.message}`,
         'cohortState',
