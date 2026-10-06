@@ -21,6 +21,11 @@
  * of a `release`-lifecycle identity stayed completely undetected — the
  * same silent data loss #92 existed to remove, one function call away.
  *
+ * The two halves are only effective together, which is why this file
+ * exists on its own branch: against #92 alone the transition writes are
+ * unguarded, and against #103 alone the guard is a parameter nobody
+ * passes.
+ *
  * ## Why `release` is the lifecycle that matters here
  *
  * #92's `recordRun` guard is already correct, so the `persistent` path
@@ -31,39 +36,50 @@
  * the second run of the transition a returning-user observation at all,
  * and with it the evidence #61's release-transition comparison joins on.
  *
- * ## The race is staged, not raced for
+ * ## The race is staged, and staged so that it is staged *either way*
  *
  * `CohortStateService` reads the record more than once per mutating
  * call — the public method's own load, then `put`'s re-read — and both
  * are awaited, so a race is reachable. Reaching it by timing is flaky,
  * and a flaky concurrency test trains reviewers to re-run it instead of
  * read it. `InterleavingStore` therefore runs a competing commit at the
- * exact point it matters, so the test asserts on the window a
- * check-then-write guard closes rather than on a timing coincidence.
+ * exact point it matters.
  *
- * ## The arming ordinals are asserted, not assumed
+ * The exact point is the subtle part, and getting it wrong produces a
+ * reproduction that is red for the wrong reason — which is worse than
+ * no reproduction, because a test that cannot tell "the guard is
+ * absent" from "the race never happened" will happily pass for the
+ * second reason once someone fixes the first.
  *
- * Staging a guard's window by read ordinal has a failure mode that
- * fails *silently in the wrong direction*: arm one read too early and
- * the competing commit lands before the runtime has measured the
- * revision at all, the writer then legitimately succeeds against the
- * newer revision, and the test stops testing the guard without saying
- * so. `CountingReads` records the ordinal the hook actually fired at and
- * every stage asserts it, so a change to the write path's read count
- * fails loudly here instead of passing for the wrong reason.
+ * The fix *adds* a read: measuring the revision to guard against. So an
+ * arming ordinal derived from the fixed code names a read that does not
+ * exist in the unfixed code, the hook never fires, the competitor never
+ * runs, and the "reproduction" then fails at the arming assertion or on
+ * a success that only looks like a missing guard. Every stage below
+ * therefore arms at **the first read ordinal that exists on both sides
+ * of the fix**:
  *
- * Fixing #106 *moved* those ordinals, because the fix adds the
- * `currentRevision` read that supplies the guard. The derivations are
- * written out at each stage rather than left as bare numbers.
+ * | stage | armed before read | unfixed: what that read is | fixed: what that read is |
+ * | --- | --- | --- | --- |
+ * | `closeTransition` | 9 | `put`'s re-read | `closeTransition`'s own load |
+ * | `openTransition` | 2 | `put`'s re-read | `openTransition`'s own load |
+ *
+ * On both sides that lands the competitor strictly after the writer has
+ * finished reading and strictly before its bytes are computed, so the
+ * unfixed run really does lose data and the fixed run really does
+ * conflict. The ordninal is asserted *after* the data-loss claim for
+ * the same reason: a red run must be red because the loser's write was
+ * applied, and the ordinal is a property of the staging, not of the
+ * defect.
  *
  * ## What the assertions are about
  *
- * Each test asserts the state that **survives**, not merely that
- * something threw. "An error was raised" would be satisfied by a
- * runtime that refused every write, so the control cases at the end run
- * complete single-writer and sequential release runs and assert the
- * transitioned state is correct when read back off disk. A suite where
- * nothing can be written cannot pass them.
+ * Each test asserts the state that **survives**, and asserts it *first*.
+ * "An error was raised" would be satisfied by a runtime that refused
+ * every write, so the control cases at the end run complete
+ * single-writer and sequential release runs and assert the transitioned
+ * state is correct when read back off disk. A suite where nothing can
+ * be written cannot pass them.
  *
  * ## No retry policy is asserted
  *
@@ -83,6 +99,7 @@ import * as path from 'node:path';
 import {
   persistRun,
   openReleaseWindows,
+  resolveCohort,
   isRuntimeIntegrationError,
 } from '../../../src/runtime/index.js';
 import {
@@ -99,6 +116,7 @@ import {
   ENV_A,
   ENV_B,
   asEnvironmentId,
+  makeExplicitCohort,
   makeIdentity,
   makePlan,
   fixedClock,
@@ -278,21 +296,25 @@ describe('a concurrent release transition is detected, not silently applied', ()
    * The red-before reproduction, on the runtime side.
    *
    * Read derivation for `persistRun` of one `release` member with
-   * durable retention, against the fix:
+   * durable retention. The first seven reads are the same either way;
+   * the fix adds read 8.
    *
-   * | # | read |
-   * | --- | --- |
-   * | 1 | `currentRevision` for `recordRun` |
-   * | 2, 3 | `recordRun`: its own load, then `put`'s re-read |
-   * | 4 | `currentRevision` for `touch` |
-   * | 5, 6 | `touch`: its own load, then `put`'s re-read |
-   * | 7 | the `loadIdentity` that collects the result |
-   * | 8 | `currentRevision` for `closeTransition` |
-   * | 9, 10 | `closeTransition`: its own load, then `put`'s re-read |
+   * | # | read | |
+   * | --- | --- | --- |
+   * | 1 | `currentRevision` for `recordRun` | either way |
+   * | 2, 3 | `recordRun`: its own load, then `put`'s re-read | either way |
+   * | 4 | `currentRevision` for `touch` | either way |
+   * | 5, 6 | `touch`: its own load, then `put`'s re-read | either way |
+   * | 7 | the `loadIdentity` that collects the result | either way |
+   * | 8 | `currentRevision` for `closeTransition` | **fix only** |
+   * | 9 | `closeTransition`: its own load, then `put`'s re-read | either way |
    *
-   * The guard is the window between read 8 and read 10, so the commit
-   * is armed in front of read 10 — after the revision the runtime
-   * measured, and before `put` compares it.
+   * Read 9 is the first read after the fix's extra read that exists in
+   * both versions, so the competitor is armed in front of it. That is
+   * the last point at which the loser's payload is still computed from
+   * a snapshot taken before the competitor committed, and it is the
+   * first point that is inside the guard's window once the revision is
+   * supplied.
    */
   it('refuses the losing closeTransition and keeps the concurrent writer’s observation', async () => {
     const { backing, identity, revision } = await stageOpenWindow();
@@ -304,6 +326,7 @@ describe('a concurrent release transition is detected, not silently applied', ()
     const a = writer(aTrace, fixedClock(AFTER_AT));
     const b = writer(bTrace, fixedClock(AFTER_AT));
 
+    let armedAt = 0;
     gate.armBeforeRead(async () => {
       armedAt = counter.readCount;
       // A legitimate concurrent writer: the same identity, a later run
@@ -314,9 +337,8 @@ describe('a concurrent release transition is detected, not silently applied', ()
         observedAt: AFTER_AT,
         runId: 'run-concurrent',
       });
-    }, 9);
+    }, 8);
 
-    let armedAt = 0;
     const outcome = await persistRun(
       persistArgs({ service: a, members: [identity], runId: 'run-a', version: VERSION_AFTER, closeTransition: true }),
     ).then(
@@ -324,13 +346,31 @@ describe('a concurrent release transition is detected, not silently applied', ()
       (error: unknown) => ({ ok: false as const, error }),
     );
 
-    // The substantive claim comes first, so a red run is red *because
-    // the write was not refused* and not because an ordinal moved.
-    // On the unguarded code this is where it fails: the loser's
-    // `closeTransition` returned success.
-    expect(outcome.ok).toBe(false);
+    // --- The substantive claim comes first, and it is about the data.
+    //
+    // `run-a`'s own observation and touch landed — those writes are
+    // *not* the ones that raced — and the concurrent writer's
+    // observation must still be there. The window is still open and the
+    // retained state the transition carries must not have been dropped
+    // by a write that was never entitled to drop it.
+    //
+    // Against the unguarded runtime this is where the test goes red,
+    // and it is red because the loser's `closeTransition` was applied
+    // over a snapshot taken before `run-concurrent` existed:
+    // `run-concurrent` is simply not in the list, and `retainedState`
+    // has been dropped. Nothing about that failure depends on a read
+    // count, which is the point — see the header note on staging.
+    const after = await writer(backing, fixedClock(AFTER_AT)).loadIdentity(identity.id);
+    expect(after.observations.map((o) => o.runId), "the concurrent writer's observation must survive").toEqual([
+      'run-before',
+      'run-a',
+      'run-concurrent',
+    ]);
+    expect(after.releaseWindow?.toVersion).toBeUndefined();
+    expect(after.retainedState, 'the transition’s retained state must not be dropped by a lost-update write').toBeDefined();
 
-    // --- The failure is typed, names the field, and carries both
+    // --- The write was refused, and refused *as a conflict*: typed
+    // distinctly from an unrelated store failure and carrying the two
     // revisions, so an operator can tell "someone else wrote" from "the
     // record was rebuilt" — the difference between a retry and a call.
     if (outcome.ok) throw new Error('unreachable: the assertion above already failed');
@@ -344,17 +384,6 @@ describe('a concurrent release transition is detected, not silently applied', ()
     expect(actual).toBeTypeOf('number');
     expect(actual as number).toBeGreaterThan(expected as number);
 
-    // --- The state that survives is the point. `run-a`'s own
-    // observation and touch landed — those writes are *not* the ones
-    // that raced — and the concurrent writer's observation is still
-    // there. The window is still open and the retained state the
-    // transition carries has not been dropped by a write that was
-    // never entitled to drop it.
-    const after = await writer(backing, fixedClock(AFTER_AT)).loadIdentity(identity.id);
-    expect(after.observations.map((o) => o.runId)).toEqual(['run-before', 'run-a', 'run-concurrent']);
-    expect(after.releaseWindow?.toVersion).toBeUndefined();
-    expect(after.retainedState).toBeDefined();
-
     // --- The mechanism, stated as surviving state rather than as an
     // absence of an error. A's first two writes are its own
     // `recordRun` and `touch`, which did not race and are expected to
@@ -365,6 +394,12 @@ describe('a concurrent release transition is detected, not silently applied', ()
     // payload.
     expect(aTrace.trace.commits.map((c) => c.revision)).toEqual([revision + 1, revision + 2]);
     expect(bTrace.trace.commits.map((c) => c.revision)).toEqual([revision + 3]);
+
+    // --- Last, because it is a statement about the staging rather than
+    // about the defect: the competitor really did commit, in front of
+    // the read the derivation above names. Asserted after the data-loss
+    // claim so a failure points at the loss, not at the fixture.
+    expect(armedAt, 'the commit must land in front of read 9').toBe(9);
   });
 
   /**
@@ -374,11 +409,11 @@ describe('a concurrent release transition is detected, not silently applied', ()
    * observation is erased by a writer that was only trying to open a
    * window.
    *
-   * Read derivation, measured rather than assumed: `openReleaseWindows`
-   * measures the revision first (read 1), `openTransition` then loads
-   * the record (read 2) and `put` re-reads it (read 3). The guard's
-   * window is between reads 1 and 3, so the commit is armed in front
-   * of read 3.
+   * Read derivation: the fix measures the revision first (read 1), and
+   * `openTransition` then loads the record and `put` re-reads it. Read
+   * 2 is the first read that exists in both versions, so the commit is
+   * armed in front of it — `put`'s re-read before the fix, the
+   * mutator's own load after it.
    *
    * Staged with **no** window open, because #60 permits a `release`
    * identity exactly one transition: staging one that is already open
@@ -395,6 +430,7 @@ describe('a concurrent release transition is detected, not silently applied', ()
     const a = writer(aTrace, fixedClock(AFTER_AT));
     const b = writer(bTrace, fixedClock(AFTER_AT));
 
+    let armedAt = 0;
     gate.armBeforeRead(async () => {
       armedAt = counter.readCount;
       await b.recordRun(identity.id, {
@@ -403,27 +439,31 @@ describe('a concurrent release transition is detected, not silently applied', ()
         observedAt: AFTER_AT,
         runId: 'run-concurrent',
       });
-    }, 2);
+    }, 1);
 
-    let armedAt = 0;
     const outcome = await openReleaseWindows(openArgs(a, [identity], AFTER_AT)).then(
       (value) => ({ ok: true as const, value }),
       (error: unknown) => ({ ok: false as const, error }),
     );
 
-    expect(armedAt, 'the commit must land in front of read 3, the guard’s window').toBe(3);
+    // --- The substantive claim, first, and again about the data. An
+    // open window looks additive, so the loss here is not obvious from
+    // the call: the concurrent writer's observation is dropped because
+    // the whole record is rewritten from a pre-race snapshot. Against
+    // the unguarded runtime `run-concurrent` is absent and a window was
+    // opened by a writer that was no longer entitled to open one.
+    const after = await writer(backing, fixedClock(AFTER_AT)).loadIdentity(identity.id);
+    expect(after.observations.map((o) => o.runId), "the concurrent writer's observation must survive").toEqual([
+      'run-before',
+      'run-concurrent',
+    ]);
+    expect(after.releaseWindow, 'no window may be opened by a writer that lost the race').toBeUndefined();
 
-    expect(outcome.ok).toBe(false);
     if (outcome.ok) throw new Error('unreachable: the assertion above already failed');
     if (!isRuntimeIntegrationError(outcome.error)) throw new Error('unreachable');
     expect(outcome.error.code).toBe('revisionConflict');
     expect(outcome.error.field).toBe('identity.openTransition');
-
-    // The concurrent writer's observation survived, and no window was
-    // opened by a writer that was no longer entitled to open one.
-    const after = await writer(backing, fixedClock(AFTER_AT)).loadIdentity(identity.id);
-    expect(after.observations.map((o) => o.runId)).toEqual(['run-before', 'run-concurrent']);
-    expect(after.releaseWindow).toBeUndefined();
+    expect(outcome.error.detail).toMatchObject({ identityId: identity.id, code: 'revision_conflict' });
 
     // The mechanism: the loser's write never reached the store, so it
     // never claimed a revision. Had it not been stopped, A and B would
@@ -431,6 +471,8 @@ describe('a concurrent release transition is detected, not silently applied', ()
     // fooled along with the payload.
     expect(aTrace.trace.labels).toEqual([]);
     expect(bTrace.trace.commits.map((c) => c.revision)).toEqual([revision + 1]);
+
+    expect(armedAt, 'the commit must land in front of read 2').toBe(2);
   });
 });
 
@@ -525,10 +567,28 @@ describe('control: sequential release runs are not mistaken for a race', () => {
       expect(stored.releaseWindow?.toVersion).toBe(VERSION_AFTER);
     }
   });
+
+  it('measures the open separately per member, so a multi-member cohort is not refused', async () => {
+    // The same shape on the open side, and the reason the revision is
+    // measured inside the loop rather than hoisted out of it.
+    const backing = new FileRecordStore({ rootDir: dir });
+    const service = writer(backing, fixedClock());
+    const members = ['idn-d', 'idn-e'].map((id) => makeIdentity({ id, lifecycle: 'release' }));
+    for (const member of members) await service.declareIdentity(member);
+
+    const opened = await openReleaseWindows(openArgs(service, members, BEFORE_AT));
+
+    expect(opened).toEqual(members.map((m) => m.id));
+    const reopened = writer(new FileRecordStore({ rootDir: dir }), fixedClock(AFTER_AT));
+    for (const member of members) {
+      const stored = await reopened.loadIdentity(member.id);
+      expect(stored.releaseWindow?.fromVersion).toBe(VERSION_BEFORE);
+    }
+  });
 });
 
 /* -------------------------------------------------------------------------- */
-/* The limit, documented and pinned rather than papered over                  */
+/* The limits, documented and pinned rather than papered over                  */
 /* -------------------------------------------------------------------------- */
 
 describe('the limit: no store-level compare-and-swap means one window remains', () => {
@@ -545,6 +605,12 @@ describe('the limit: no store-level compare-and-swap means one window remains', 
    * by this test, and left visible: a reader must not come away
    * believing the guard is atomic. A half-guarantee stated as a whole
    * one is the defect class this investigation exists to reject.
+   *
+   * #103's finding is the reason this cannot be worked around by
+   * reading revisions: the counter itself is fooled, because both
+   * writers compute their revision from the same earlier read and store
+   * the same number. That is why check-then-write is not made sound by
+   * reading revisions again afterwards.
    */
   it('does not detect a writer that commits after put’s own re-read', async () => {
     const { backing, identity } = await stageOpenWindow('close-path');
@@ -585,13 +651,9 @@ describe('the limit: no store-level compare-and-swap means one window remains', 
     expect(lost.observations.map((o) => o.runId)).toEqual(['run-before', 'run-a']);
 
     // The same window is reachable on a transition write, and there
-    // the whole payload is the one that survives. `openReleaseWindows`
-    // is a single write, so the gate lands in its only `put`.
-    // `openReleaseWindows` is a single write, so the gate lands in its
-    // only `put` — and its window is the residual one for a *transition*
-    // write, where the whole payload is the one that survives. Staged
-    // without an open window, because #60 permits a `release` identity
-    // exactly one transition and this one has not had it yet.
+    // the whole payload is the one that survives. Staged without an
+    // open window, because #60 permits a `release` identity exactly
+    // one transition and this one has not had it yet.
     const second = await stageOpenWindow('open-path', { windowOpen: false });
     const cGate = new InterleavingStore(second.backing);
     const cTrace = new TracingRecordStore(cGate, 'C');
@@ -616,3 +678,86 @@ describe('the limit: no store-level compare-and-swap means one window remains', 
     expect(afterOpen.releaseWindow?.openedAt).toBe(AFTER_AT);
   });
 });
+
+describe('the limit: the runtime has no way to guard resolveCohort', () => {
+  /**
+   * This test asserts that data is LOST. It is here on purpose, and it
+   * is the honest boundary of what #106 can deliver.
+   *
+   * `resolveCohort` is a mutator like any other — it rewrites the
+   * cohort record and discards the previously resolved membership — and
+   * #103 gave it a `SaveOptions` guard. The runtime calls it from
+   * {@link resolveCohort} and **cannot** supply a revision, because
+   * `CohortStateService.currentRevision` reads an *identity* record and
+   * there is no cohort-side equivalent. Adding one is a change to
+   * `src/cohort/**`, which is #60's and #103's surface, not this
+   * ticket's.
+   *
+   * So the runtime's one remaining unguarded write is named here, in
+   * the code, and in this test, rather than left to be discovered. The
+   * asymmetry is deliberate: where the runtime *can* measure a revision
+   * it does, and there is no way to opt out; where it cannot, the code
+   * says in a comment that no protection applies on that path. What it
+   * must not do is present the first as though it were the second.
+   */
+  it('loses a concurrent membership resolution, and says so', async () => {
+    const backing = new FileRecordStore({ rootDir: dir });
+    const identity = makeIdentity({ id: 'idn-cohort-guard', lifecycle: 'persistent' });
+    const cohort = makeExplicitCohort([identity.id]);
+    const setup = writer(backing, fixedClock(BEFORE_AT));
+    await setup.declareIdentity(identity);
+    await setup.declareCohort(cohort);
+
+    const gate = new InterleavingStore(backing);
+    const counter = new CountingReads(gate);
+    const aTrace = new TracingRecordStore(counter, 'A');
+    const bTrace = new TracingRecordStore(backing, 'B');
+    const a = writer(aTrace, fixedClock(AFTER_AT));
+    const b = writer(bTrace, fixedClock(AFTER_AT));
+
+    // The competitor re-resolves membership between the runtime's own
+    // load of the cohort record and `put`'s re-read of it — the same
+    // window the transition writes are now guarded against.
+    let armedAt = 0;
+    gate.armBeforeRead(async () => {
+      armedAt = counter.readCount;
+      await b.resolveCohort(cohort.id, { resolvedAt: BEFORE_AT });
+    }, 1);
+
+    const resolved = await resolveCohort({
+      service: a,
+      cohortId: cohort.id,
+      planningCeiling: 10,
+      resolvedAt: AFTER_AT,
+    });
+    expect(resolved.members.map((m) => m.id)).toEqual([identity.id]);
+
+    // The competitor ran, and it ran inside the window: this is a real
+    // race, not an unexercised path.
+    expect(armedAt).toBe(2);
+    expect(bTrace.trace.commits.map((c) => c.revision)).toEqual([2]);
+
+    // And the runtime was not told. Its own resolution was computed
+    // from the pre-race snapshot and simply overwrote the competitor's,
+    // because there is no revision for it to guard with. Note what is
+    // *not* claimed here, because it would be false: unlike the CAS
+    // window above, this one does not fool the counter. The revisions
+    // advance cleanly (2 then 3) because `put` re-read after the
+    // competitor committed. The loss is a plain last-write-wins — the
+    // envelope records a perfectly ordinary second write, so nothing
+    // downstream can tell that a resolution was discarded.
+    expect(aTrace.trace.commits.map((c) => c.revision)).toEqual([3]);
+    expect(await storedCohortRevision(backing, cohort.id)).toBe(3);
+
+    // The discarded resolution is what makes it a loss: the stored
+    // membership carries the runtime's own `resolvedAt`, and the
+    // competitor's is gone. Nothing raised.
+    const stored = await writer(backing, fixedClock(AFTER_AT)).loadCohort(cohort.id);
+    expect(stored.membership?.resolvedAt).toBe(AFTER_AT);
+  });
+});
+
+async function storedCohortRevision(store: RecordStore, id: string): Promise<number | undefined> {
+  const text = await store.read('cohort', `cohort:${id}`);
+  return text === undefined ? undefined : parseDurableRecord(text, 'cohort').revision;
+}
