@@ -200,6 +200,18 @@ function directoriesOf(files: ReadonlyArray<string>): ReadonlySet<string> {
 const eslint = new ESLint({ cwd: REPO_ROOT });
 
 /**
+ * Count the rules that would actually run. A rule set to `off` is present in
+ * the config and enforces nothing, so counting it as coverage would reproduce
+ * the exact defect this file exists to catch — "listed, but inert".
+ */
+function enabledRuleCount(config: { rules?: Record<string, unknown> } | undefined): number {
+  return Object.values(config?.rules ?? {}).filter((setting) => {
+    const severity = Array.isArray(setting) ? setting[0] : setting;
+    return severity !== 'off' && severity !== 0;
+  }).length;
+}
+
+/**
  * Ask ESLint, reading the project's own `eslint.config.js`, whether `file` is
  * linted by a config object that actually carries rules.
  *
@@ -215,14 +227,14 @@ async function lintVerdict(file: string): Promise<Verdict> {
     };
   }
   const config = await eslint.calculateConfigForFile(file);
-  const ruleCount = Object.keys(config?.rules ?? {}).length;
+  const ruleCount = enabledRuleCount(config);
   if (ruleCount === 0) {
     return {
       covered: false,
-      why: 'no eslint config object contributes `rules` to it, so it is linted with an empty ruleset',
+      why: 'no eslint config object contributes an enabled rule to it, so it is linted with an empty ruleset',
     };
   }
-  return { covered: true, why: `${ruleCount} rules` };
+  return { covered: true, why: `${ruleCount} enabled rules` };
 }
 
 /** The file list `tsc -p tsconfig.json` would compile, from the compiler itself. */
