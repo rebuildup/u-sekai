@@ -29,8 +29,7 @@
  *    asks "was this file linted?" and it is verified by nothing.
  *
  * Escape 2 is why the assertion here is not "is the file ignored?". It is
- * "is the file ignored, **and** does a config object actually contribute
- * rules to it?".
+ * "does a config object actually contribute rules to it?".
  *
  * ## Why this is a test and not just a longer `files` array
  *
@@ -56,11 +55,11 @@
  *
  * - every entry must carry a `reason` and an `issue`, so an escape cannot be
  *   added without saying what it is and who owns it;
- * - an entry that no longer matches any tracked file fails, so a gap that gets
- *   fixed cannot leave a stale exemption behind to be inherited;
- * - the final test runs the discovery over a synthetic file in a directory
- *   that does not exist, so a filter that had degenerated to "always true"
- *   would pass this file vacuously — it must go red instead.
+ * - an entry whose files are now covered *without* it fails, so closing a gap
+ *   forces the declaration to be deleted instead of being inherited forever;
+ * - the last test runs the very same coverage pipeline over a synthetic path in
+ *   a directory that does not exist, proving the pipeline reports an unseen
+ *   directory as uncovered rather than passing it vacuously.
  */
 
 import { execFileSync } from 'node:child_process';
@@ -68,7 +67,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { ESLint } from 'eslint';
 import ts from 'typescript';
-import { describe, expect, it } from 'vitest';
+import { beforeAll, describe, expect, it } from 'vitest';
 
 const REPO_ROOT = fileURLToPath(new URL('../../..', import.meta.url));
 
@@ -93,6 +92,13 @@ const SOURCE_EXTENSIONS: ReadonlySet<string> = new Set([
 
 /** The two ways a source file can escape verification. */
 type Axis = 'lint' | 'typecheck';
+
+interface Verdict {
+  /** True only when a config object contributes a non-empty ruleset. */
+  readonly covered: boolean;
+  /** Why, phrased so the message names the thing to change. */
+  readonly why: string;
+}
 
 interface Exemption {
   /** Path or directory prefix. Matches `file` exactly or as a `path/` prefix. */
@@ -127,7 +133,7 @@ const EXEMPTIONS: ReadonlyArray<Exemption> = [
     path: 'scripts',
     axis: 'lint',
     reason:
-      'scripts/*.mjs is type-checked via `scripts/**/*.mjs`, but no eslint config object carries `rules` for it, so it is linted with an empty ruleset. Closing this needs either a semantics-changing `!=` to `!==` in a release script or a `no-console` exception for CLIs whose stdout is their product — both out of scope here.',
+      'scripts/*.mjs is type-checked via `scripts/**/*.mjs`, but no eslint config object carries `rules` for it, so it is linted with an empty ruleset. Closing this needs either a semantics-changing `!=` to `!==` in a release script (release-rules.mjs:619 uses the deliberate `!= null` idiom, which `!==` would break) or a `no-console` exception for CLIs whose stdout is their product — both out of scope here.',
     issue: '#104',
   },
 ];
@@ -164,17 +170,25 @@ const sourceFiles: ReadonlyArray<string> = trackedFiles()
   .filter(isSourceFile)
   .sort();
 
-/** Directories that hold at least one discovered source file. */
-function sourceDirectories(files: ReadonlyArray<string>): ReadonlySet<string> {
+/**
+ * Directories that hold at least one of the given files.
+ *
+ * `.` is included only when a top-level file is actually involved, so a failure
+ * message does not point the contributor at the repository root for a problem
+ * that lives three directories down.
+ */
+function directoriesOf(files: ReadonlyArray<string>): ReadonlySet<string> {
   const directories = new Set<string>();
   for (const file of files) {
     const segments = file.split('/');
-    // Every ancestor up to (but excluding) the file itself, plus the top level.
     segments.pop();
+    if (segments.length === 0) {
+      directories.add('.');
+      continue;
+    }
     for (let i = 1; i <= segments.length; i += 1) {
       directories.add(segments.slice(0, i).join('/'));
     }
-    directories.add('.');
   }
   return directories;
 }
@@ -185,16 +199,27 @@ function sourceDirectories(files: ReadonlyArray<string>): ReadonlySet<string> {
 
 const eslint = new ESLint({ cwd: REPO_ROOT });
 
-async function lintVerdict(file: string): Promise<{ covered: boolean; why: string }> {
+/**
+ * Ask ESLint, reading the project's own `eslint.config.js`, whether `file` is
+ * linted by a config object that actually carries rules.
+ *
+ * `isPathIgnored` is true both for a path matched by an `ignores` entry *and*
+ * for a file no config object matches at all — which is escape 1. The message
+ * therefore states both causes rather than guessing at one.
+ */
+async function lintVerdict(file: string): Promise<Verdict> {
   if (await eslint.isPathIgnored(file)) {
-    return { covered: false, why: 'matches an eslint `ignores` entry' };
+    return {
+      covered: false,
+      why: '`eslint .` does not lint it at all: no eslint config object matches it, or it matches an `ignores` entry',
+    };
   }
   const config = await eslint.calculateConfigForFile(file);
   const ruleCount = Object.keys(config?.rules ?? {}).length;
   if (ruleCount === 0) {
     return {
       covered: false,
-      why: 'no eslint config object contributes `rules` to it, so it is linted with an empty ruleset (or not linted at all)',
+      why: 'no eslint config object contributes `rules` to it, so it is linted with an empty ruleset',
     };
   }
   return { covered: true, why: `${ruleCount} rules` };
@@ -231,16 +256,32 @@ function exemptionFor(file: string, axis: Axis): Exemption | undefined {
   );
 }
 
-function isCovered(file: string, axis: Axis, lintVerdicts: ReadonlyMap<string, string>): boolean {
+/** True when the file needs no exemption on this axis. */
+function coveredOnItsOwnMerits(file: string, axis: Axis, lint: ReadonlyMap<string, Verdict>): boolean {
   if (axis === 'typecheck') {
-    return program.has(file) || exemptionFor(file, axis) !== undefined;
+    return program.has(file);
   }
-  return lintVerdicts.get(file) === 'ok' || exemptionFor(file, axis) !== undefined;
+  return lint.get(file)?.covered === true;
 }
+
+function isCovered(file: string, axis: Axis, lint: ReadonlyMap<string, Verdict>): boolean {
+  return coveredOnItsOwnMerits(file, axis, lint) || exemptionFor(file, axis) !== undefined;
+}
+
+/** One lint verdict per tracked source file, computed once for the whole suite. */
+const lint = new Map<string, Verdict>();
 
 /* -------------------------------------------------------------------------- */
 
 describe('lint and type-check coverage', () => {
+  beforeAll(async () => {
+    await Promise.all(
+      sourceFiles.map(async (file) => {
+        lint.set(file, await lintVerdict(file));
+      }),
+    );
+  });
+
   it('discovers the repository\'s tracked source files', () => {
     // Guards against the whole file passing vacuously if discovery breaks.
     expect(sourceFiles.length).toBeGreaterThan(50);
@@ -264,48 +305,55 @@ describe('lint and type-check coverage', () => {
     }
   });
 
-  it('has no stale exemption left behind by a gap that has since been closed', () => {
-    const stale = EXEMPTIONS.filter((exemption) => !sourceFiles.some(isCoveredBy(exemption)));
+  it('carries no exemption for a gap that has since been closed', () => {
+    // Fails in both directions the declaration can go stale: a path that no
+    // longer exists, and — the one that actually bites — a gap that another PR
+    // closed while the declaration stayed behind to be inherited forever.
+    const stale = EXEMPTIONS.filter((exemption) => {
+      const matched = sourceFiles.filter(isCoveredBy(exemption));
+      return matched.length === 0 || matched.every((file) => coveredOnItsOwnMerits(file, exemption.axis, lint));
+    });
     expect(
       stale.map((exemption) => `${exemption.path} (${exemption.axis})`),
-      'these exemptions no longer match any tracked source file — delete them',
+      'these exemptions no longer describe a real gap — the files are covered without them. Delete the entry.',
     ).toEqual([]);
   });
 
-  it('gives every tracked source file a real lint ruleset', async () => {
-    const verdicts = new Map<string, string>();
-    const uncovered: string[] = [];
-    for (const file of sourceFiles) {
-      const verdict = await lintVerdict(file);
-      if (verdict.covered) {
-        verdicts.set(file, 'ok');
-      } else if (exemptionFor(file, 'lint') !== undefined) {
-        verdicts.set(file, 'ok');
-      } else {
-        uncovered.push(`${file} — ${verdict.why}`);
-      }
-    }
-    // Reported per directory so the message points at the thing to fix.
-    expect(uncovered, uncoveredDirectories(uncovered)).toEqual([]);
+  it('gives every tracked source file a real lint ruleset', () => {
+    const uncovered = sourceFiles
+      .filter((file) => !isCovered(file, 'lint', lint))
+      .map((file) => `${file} — ${lint.get(file)?.why ?? 'not evaluated'}`);
+    expect(uncovered, uncoveredMessage(uncovered)).toEqual([]);
   });
 
   it('puts every tracked source file inside the tsc program', () => {
     const uncovered = sourceFiles
-      .filter((file) => !isCovered(file, 'typecheck', new Map()))
+      .filter((file) => !isCovered(file, 'typecheck', lint))
       .map((file) => `${file} — not in the file list tsconfig.json resolves to`);
-    expect(uncovered, uncoveredDirectories(uncovered)).toEqual([]);
+    expect(uncovered, uncoveredMessage(uncovered)).toEqual([]);
   });
 
-  it('covers something on both axes without help from an exemption', () => {
+  it('covers most files on both axes on their own merits, not by exemption', () => {
     // If every file were exempted, the two tests above would pass while
-    // checking nothing. At least one file must be covered on the merits.
-    const lintExempted = new Set(EXEMPTIONS.filter((e) => e.axis === 'lint').map((e) => e.path));
-    const typecheckExempted = new Set(EXEMPTIONS.filter((e) => e.axis === 'typecheck').map((e) => e.path));
+    // checking nothing. Most files must be covered without help.
     const coveredByMerit = sourceFiles.filter(
-      (file) =>
-        !lintExempted.has(file) && !typecheckExempted.has(file) && program.has(file),
+      (file) => coveredOnItsOwnMerits(file, 'lint', lint) && coveredOnItsOwnMerits(file, 'typecheck', lint),
     );
-    expect(coveredByMerit.length).toBeGreaterThan(50);
+    expect(coveredByMerit.length).toBeGreaterThan(sourceFiles.length / 2);
+  });
+
+  it('reports an unseen directory as uncovered instead of passing it vacuously', async () => {
+    // The guard's own negative control, using the same code path as the real
+    // checks. A path that exists in no directory of this repository must come
+    // back uncovered on both axes — otherwise the tests above would pass
+    // against a filter that had degenerated to "always covered".
+    const synthetic = 'zz-synthetic-probe/never-created.mjs';
+    const exempting = exemptionFor(synthetic, 'lint') ?? exemptionFor(synthetic, 'typecheck');
+    expect(exempting, `the synthetic probe path must not be exempted (${exempting?.path})`).toBeUndefined();
+
+    const verdict = await lintVerdict(synthetic);
+    expect(verdict.covered, `the probe path was reported as lint-covered: ${verdict.why}`).toBe(false);
+    expect(program.has(synthetic), 'the probe path was found inside the tsc program').toBe(false);
   });
 });
 
@@ -317,8 +365,8 @@ function isCoveredBy(exemption: Exemption): (file: string) => boolean {
   return (file) => exemption.path === file || file.startsWith(`${exemption.path}/`);
 }
 
-function uncoveredDirectories(messages: ReadonlyArray<string>): string {
-  const directories = [...sourceDirectories(messages.map((message) => message.split(' — ')[0] as string))].sort();
+function uncoveredMessage(messages: ReadonlyArray<string>): string {
+  const files = messages.map((message) => message.split(' — ')[0] as string);
   return [
     'These tracked source files are not covered. `eslint .` lints what its config',
     'objects match and stays silent about everything else, so this is exactly the',
@@ -329,6 +377,6 @@ function uncoveredDirectories(messages: ReadonlyArray<string>): string {
     '  - lint      -> a `files` entry in eslint.config.js that also carries `rules`',
     '  - typecheck -> an `include` entry in tsconfig.json',
     '',
-    `Directories involved: ${directories.join(', ')}`,
+    `Directories involved: ${[...directoriesOf(files)].sort().join(', ')}`,
   ].join('\n');
 }
