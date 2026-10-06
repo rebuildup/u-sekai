@@ -86,9 +86,42 @@ export interface ResolvedCohort {
  * around #60: `loadIdentity` raises on a missing record instead of
  * returning a replacement, and a run that silently dropped a member
  * would understate the very cohort the finding lineage names.
+ *
+ * ## The one write here that is deliberately unguarded
+ *
+ * `CohortStateService.resolveCohort` is a **mutator**: it rewrites the
+ * cohort record and discards the membership a previous writer resolved.
+ * #103 gave it a `SaveOptions` guard, and this call does not supply one,
+ * because **the runtime has no way to measure one** —
+ * `CohortStateService.currentRevision` reads an *identity* record, and
+ * there is no cohort-side equivalent. Adding one is a change to
+ * `src/cohort/**`, which is #60's and #103's surface, not this
+ * ticket's.
+ *
+ * So the choice this ticket makes is stated rather than implied:
+ *
+ * - **Everywhere the runtime *can* measure a revision, it does, and
+ *   there is no way to opt out.** That is the fail-closed direction, and
+ *   it is the one taken in {@link openReleaseWindows} and
+ *   {@link persistRun}.
+ * - **Here, where it cannot, no protection applies** — and the code says
+ *   so at the call site, rather than leaving a reader to infer a
+ *   guarantee that is not there.
+ *
+ * The consequence is a real one and is pinned by a test rather than
+ * waved at: a concurrent membership resolution is lost silently. What
+ * that does *not* do is fool the revision counter (both writes land at
+ * consecutive revisions, because `put` re-reads after the competitor
+ * committed), so nothing downstream can tell a discarded resolution
+ * from an ordinary second write. Closing it needs a cohort-side
+ * revision accessor and, beyond that, #60's compare-and-swap contract.
+ * Reported as a known gap; not absorbed here.
  */
 export async function resolveCohort(input: ResolveCohortInput): Promise<ResolvedCohort> {
   const state = await guard('cohort.resolve', undefined, () =>
+    // No `SaveOptions` on purpose — see the note above. `identityId` is
+    // `undefined` here for the same reason: this is a *cohort* record,
+    // so naming an identity would misattribute the failure.
     input.service.resolveCohort(input.cohortId, { resolvedAt: input.resolvedAt }),
   );
 
@@ -188,6 +221,22 @@ export function assertTransitionEligible(
  * Callers are expected to have run {@link assertTransitionEligible}
  * first, so this is a straight loop: one read-modify-write per member,
  * each under the same cross-release-stable key #60 owns.
+ *
+ * ## The open is guarded, and the revision is measured per member
+ *
+ * `openTransition` rewrites the whole identity record, so it is not the
+ * additive write it looks like: a writer whose snapshot predates a
+ * concurrent run erases that run's observation while only trying to open
+ * a window. #103 gave the method a `SaveOptions` guard; this is the
+ * caller that supplies one, and without it the guard is a parameter
+ * nobody passes — enforced, advertised, and inert.
+ *
+ * The revision is measured **inside** the loop, immediately before the
+ * write it guards. A revision hoisted out of the loop would be stale for
+ * every member but the first, and a cohort of three `release` identities
+ * — the ordinary case, one per environment — would refuse two of its own
+ * members. A revision carried over from an unrelated earlier write would
+ * be wrong in the same way for a different reason.
  */
 export async function openReleaseWindows(
   input: OpenTransitionInput,
@@ -198,11 +247,25 @@ export async function openReleaseWindows(
 
   const opened: SyntheticIdentityId[] = [];
   for (const member of input.members) {
+    // Absent means `0` — "the record must not exist yet" — which is what
+    // closes the create-race on this path: if another writer creates the
+    // record in the window, its revision is at least 1 and this write is
+    // refused instead of overwriting it. In practice `openTransition`'s
+    // own load raises `identity_not_found` for an absent record first;
+    // the `0` is what makes the *late* create a conflict rather than a
+    // silent overwrite of the newcomer.
+    const beforeOpen = await guard('identity.currentRevision', member.id, () =>
+      input.service.currentRevision(member.id),
+    );
     await guard('identity.openTransition', member.id, () =>
-      input.service.openTransition(member.id, {
-        fromVersion: previous.version,
-        openedAt: input.openedAt,
-      }),
+      input.service.openTransition(
+        member.id,
+        {
+          fromVersion: previous.version,
+          openedAt: input.openedAt,
+        },
+        { expectedRevision: beforeOpen ?? 0 },
+      ),
     );
     opened.push(member.id);
   }
@@ -252,7 +315,22 @@ export interface PersistRunResult {
  * {@link PersistRunInput}, because a field that can be omitted is a
  * field that will be.
  *
- * The alternative — an explicit `'guarded' | 'unconditional'` flag —
+ * **This is the fail-closed direction, chosen deliberately.** The
+ * alternative — leaving `expectedRevision` optional here because #60's
+ * layer makes it optional — is the dangerous steady state this whole
+ * investigation is about: a guard that is enforced, advertised as
+ * protection, and supplied by nobody. It reads as safe and is not. So
+ * within the runtime's own write surface there is no parameter, no
+ * option, and no branch by which a durable write is made unguarded; a
+ * caller cannot opt out because there is nothing to opt out *of*. The
+ * one path where the runtime structurally cannot comply —
+ * {@link resolveCohort}, whose guard would need a cohort-side revision
+ * the cohort layer does not expose — says in a comment that no
+ * protection applies there, and is pinned by a test as the only such
+ * call. Those two statements are different on purpose and are not to be
+ * collapsed into each other.
+ *
+ * The alternative shape — an explicit `'guarded' | 'unconditional'` flag —
  * was considered and rejected. It restores the ability to persist
  * unguarded, which is the ability that caused this defect, and there is
  * no production caller that needs it: `execute.ts` is the only one, and
@@ -345,8 +423,26 @@ export async function persistRun(input: PersistRunInput): Promise<PersistRunResu
 
   if (input.closeTransition === true && toVersion !== undefined) {
     for (const member of input.members) {
+      // Measured here, in this loop, and not carried down from the write
+      // loop above: this is a *second pass* over every member, after
+      // each member's `recordRun` and `touch` have already advanced the
+      // record. A revision from earlier in `persistRun` is stale for
+      // every member, and would refuse an ordinary multi-member release
+      // transition rather than a race.
+      //
+      // The close is the most destructive write the runtime performs —
+      // `closeReleaseWindow` *drops* `retainedState` — so a stale write
+      // here does not lose a field, it deletes the state that made the
+      // second run of the transition a returning-user observation, and
+      // with it the evidence #61's release-transition comparison joins
+      // on. That is why the guard belongs here and not only in the
+      // cohort layer: #103 enforcing it and no caller supplying it left
+      // the one write that destroys data unguarded.
+      const beforeClose = await guard('identity.currentRevision', member.id, () =>
+        input.service.currentRevision(member.id),
+      );
       await guard('identity.closeTransition', member.id, () =>
-        input.service.closeTransition(member.id, { toVersion }),
+        input.service.closeTransition(member.id, { toVersion }, { expectedRevision: beforeClose ?? 0 }),
       );
       closed.push(member.id);
     }
