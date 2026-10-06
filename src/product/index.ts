@@ -118,14 +118,22 @@ export {
   parseEvaluationRunId,
   parseEvaluationTargetRef,
   parseEvidenceId,
+  parseObservedVersion,
   parseRunLineage,
+  parseVersionObservation,
   programKey,
+  resolveVersionBoundary,
   sameTarget,
   targetKey,
+  VERSION_BOUNDARY_EXPLANATIONS,
   type EvaluationRunId,
   type EvaluationTargetRef,
   type EvidenceId,
+  type ObservedVersion,
   type RunLineage,
+  type VersionBoundaryGap,
+  type VersionBoundaryResolution,
+  type VersionObservation,
 } from './lineage.js';
 
 export {

@@ -12,17 +12,22 @@ import {
   parseEnvironmentId,
   parseEvaluationRunId,
   parseEvidenceId,
+  parseObservedVersion,
   parseProduct,
   parseProductId,
   parseProductModel,
   parseReviewProgram,
   parseRunLineage,
+  parseVersionObservation,
   programKey,
   parseSyntheticCohort,
   parseSyntheticIdentity,
   ProductDomainError,
+  resolveVersionBoundary,
   sameTarget,
   targetKey,
+  VERSION_BOUNDARY_EXPLANATIONS,
+  type VersionObservation,
 } from '../../../src/product/index.js';
 
 const target = {
@@ -248,6 +253,204 @@ describe('lineage joins for a release transition', () => {
     expect(isReleaseTransitionComparison(before, otherProgram)).toBe(false);
     expect(isReleaseTransitionComparison(before, otherCohort)).toBe(false);
     expect(isReleaseTransitionComparison(before, otherProduct)).toBe(false);
+  });
+});
+
+describe('a version boundary, distinct from an environment-name boundary (issue #83)', () => {
+  const baseline = parseRunLineage({
+    runId: 'run-baseline',
+    productId: 'prd-task-tracker',
+    environmentId: 'env-staging',
+    cohortId: 'coh-beta',
+    programId: 'rp-continuous',
+    identityIds: ['idn-alice', 'idn-bob'],
+    startedAt: '2026-10-01T00:00:00Z',
+    endedAt: '2026-10-01T00:30:00Z',
+  });
+
+  const observation = (
+    version: string,
+    observedAt: string,
+    environmentId = 'env-staging',
+  ): VersionObservation =>
+    parseVersionObservation({ environmentId, version, observedAt });
+
+  // The defect: two runs of ONE build, exposed under two environment
+  // names. The scope join accepts this — and must keep accepting it,
+  // because the scope join is not what claims a version was crossed.
+  it('refuses an environment-only difference as a version boundary', () => {
+    const observed = parseRunLineage({
+      runId: 'run-observed',
+      productId: 'prd-task-tracker',
+      environmentId: 'env-blue',
+      cohortId: 'coh-beta',
+      programId: 'rp-continuous',
+      identityIds: ['idn-alice', 'idn-bob'],
+      startedAt: '2026-10-08T00:00:00Z',
+    });
+
+    // Same build, two names. The scope join accepts ...
+    expect(isReleaseTransitionComparison(baseline, observed)).toBe(true);
+    // ... but the version boundary refuses, and says why.
+    const verdict = resolveVersionBoundary(
+      baseline,
+      observation('2026.10.01', '2026-10-01T00:05:00Z', 'env-staging'),
+      observation('2026.10.01', '2026-10-08T00:05:00Z', 'env-blue'),
+    );
+    expect(verdict.ok).toBe(false);
+    expect(verdict.ok === false && verdict.gap).toBe('same-version');
+    expect(VERSION_BOUNDARY_EXPLANATIONS['same-version']).toMatch(/environment name/);
+  });
+
+  it('accepts a version boundary even when the environment name is unchanged', () => {
+    // A `versioned` deployment serves two versions from one URL, so the
+    // environment is *not* the axis here. This is the case the old
+    // environment-only reading could not distinguish from the one above.
+    const verdict = resolveVersionBoundary(
+      baseline,
+      observation('2026.10.01', '2026-10-01T00:05:00Z'),
+      observation('2026.10.08', '2026-10-08T00:05:00Z'),
+    );
+    expect(verdict.ok).toBe(true);
+    if (verdict.ok) {
+      expect(verdict.previous.version).toBe('2026.10.01');
+      expect(verdict.current.version).toBe('2026.10.08');
+    }
+  });
+
+  it('accepts a version boundary across two environments of one product', () => {
+    const verdict = resolveVersionBoundary(
+      baseline,
+      observation('2026.10.01', '2026-10-01T00:05:00Z', 'env-staging'),
+      observation('2026.10.08', '2026-10-08T00:05:00Z', 'env-production-like'),
+    );
+    expect(verdict.ok).toBe(true);
+  });
+
+  it('is symmetric, so argument order cannot decide the verdict', () => {
+    const previous = observation('2026.10.01', '2026-10-01T00:05:00Z');
+    const current = observation('2026.10.08', '2026-10-08T00:05:00Z');
+    expect(resolveVersionBoundary(baseline, previous, current).ok).toBe(true);
+
+    // Swapping the versions is not a reversal of the comparison — it is
+    // a *different, invalid* claim (the "later" version observed first),
+    // and it must be refused rather than quietly reordered.
+    const swapped = resolveVersionBoundary(baseline, current, previous);
+    expect(swapped.ok).toBe(false);
+    expect(swapped.ok === false && swapped.gap).toBe('not-advanced-in-time');
+  });
+
+  // The ambiguous case, handled deliberately rather than by accident:
+  // an observation from before the baseline run describes some earlier
+  // run, not this one, so it cannot establish a boundary with it.
+  it('refuses an observation taken before the baseline run started', () => {
+    const verdict = resolveVersionBoundary(
+      baseline,
+      observation('2026.09.01', '2026-09-01T00:05:00Z'),
+      observation('2026.10.08', '2026-10-08T00:05:00Z'),
+    );
+    expect(verdict.ok).toBe(false);
+    expect(verdict.ok === false && verdict.gap).toBe('not-joinable');
+  });
+
+  it('refuses an observation from another product', () => {
+    // The versions differ, so only the scope check can catch this.
+    expect(() =>
+      parseVersionObservation({
+        environmentId: 'prd-task-tracker',
+        version: '2026.10.01',
+        observedAt: '2026-10-01T00:05:00Z',
+      }),
+    ).toThrow(/must match/);
+  });
+
+  it('refuses an observation whose instant cannot be ordered', () => {
+    // Date.parse('soon') is NaN, and every comparison against NaN is
+    // false — a boundary check that failed open rather than closed.
+    expect(() =>
+      parseVersionObservation({
+        environmentId: 'env-staging',
+        version: '2026.10.01',
+        observedAt: 'soon',
+      }),
+    ).toThrow(/ISO-8601 instant/);
+    expect(() =>
+      parseVersionObservation({
+        environmentId: 'env-staging',
+        version: '2026.10.01',
+        observedAt: '2026-10-01',
+      }),
+    ).toThrow(/explicit UTC offset/);
+  });
+
+  // A VersionObservation is a structural type, so a caller can build one
+  // by hand and skip the parser. The gate must still fail closed: an
+  // unorderable instant would make every comparison false and sail past
+  // the ordering check.
+  it('refuses a hand-built observation rather than trusting its type', () => {
+    const unorderable = {
+      environmentId: 'env-staging',
+      version: '2026.10.01',
+      observedAt: 'soon',
+    } as unknown as VersionObservation;
+    expect(() =>
+      resolveVersionBoundary(
+        baseline,
+        unorderable,
+        observation('2026.10.08', '2026-10-08T00:05:00Z'),
+      ),
+    ).toThrow(/ISO-8601 instant/);
+
+    // The same for a version that is not a string: `3` and `'3'` would
+    // otherwise register as two different builds.
+    const badVersion = {
+      ...observation('2026.10.01', '2026-10-01T00:05:00Z'),
+      version: 3,
+    } as unknown as VersionObservation;
+    expect(() =>
+      resolveVersionBoundary(
+        baseline,
+        badVersion,
+        observation('2026.10.08', '2026-10-08T00:05:00Z'),
+      ),
+    ).toThrow(/must be a string|must not be empty/);
+  });
+
+  it('refuses a missing or malformed version rather than assuming one', () => {
+    for (const bad of ['', ' ', 3, null, undefined, 'a'.repeat(65), '-leading-dash']) {
+      expect(() => parseObservedVersion(bad), `version ${String(bad)}`).toThrow(
+        /must not be empty|must be a string|must be a valid ObservedVersion/,
+      );
+    }
+  });
+
+  it('keeps the version opaque: it is a label, never parsed or ordered', () => {
+    // Same grammar as #62's `EnvironmentVersion`, so the two layers
+    // cannot drift on what a well-formed version looks like.
+    for (const v of ['1.2.3', 'v1.2.3-rc.1', '2026.10.01+build.7', 'build-abc']) {
+      expect(parseObservedVersion(v)).toBe(v);
+    }
+    // No semver comparison happens: 'v2' is not known to follow 'v10'.
+    expect(resolveVersionBoundary(
+      baseline,
+      observation('v2', '2026-10-01T00:05:00Z'),
+      observation('v10', '2026-10-08T00:05:00Z'),
+    ).ok).toBe(true);
+  });
+
+  it('rejects an unknown field on an observation', () => {
+    expect(() =>
+      parseVersionObservation({
+        environmentId: 'env-staging',
+        version: '1.0.0',
+        observedAt: '2026-10-01T00:05:00Z',
+        commitSha: 'abc123',
+      }),
+    ).toThrow(/unknown field\(s\): commitSha/);
+  });
+
+  it('freezes an observation', () => {
+    expect(Object.isFrozen(observation('1.0.0', '2026-10-01T00:05:00Z'))).toBe(true);
   });
 });
 
