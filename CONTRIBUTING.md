@@ -49,6 +49,9 @@ translations only.
 - Documentation, ADRs, and research-issue drafts.
 - CI / quality-gate improvements that keep CI self-contained.
 
+Run `npm run ci` for the browser-free gate. For individual suites, discovery
+checks, and interpreting test counts, see [Testing](./docs/testing.md).
+
 Out of the current release scope (still useful, but do not land on a release branch
 without an explicit umbrella Issue):
 
