@@ -180,10 +180,10 @@ export interface OpenTransitionInput {
  * Refuse a release-transition plan whose members cannot span a
  * transition.
  *
- * Only a `release` lifecycle has a window — #60's `openReleaseWindow`
- * raises for any other lifecycle, and it is right to: an `ephemeral`
- * identity retains nothing to carry, and a `persistent` one is
- * accumulating across every run rather than across one transition.
+ * Both `release` and `persistent` identities retain state across versions.
+ * Only `release` identities need a bounded window; persistent identities
+ * continue accumulating after the comparison. Ephemeral identities have
+ * no retained state to carry into a returning-user evaluation.
  *
  * This is a check rather than a filter on purpose. Silently skipping
  * the ineligible members would let a plan claim a returning-user
@@ -202,25 +202,24 @@ export function assertTransitionEligible(
   field = 'plan.lineage',
 ): void {
   if (plan.lineage === undefined) return;
-  const ineligible = members.filter((m) => m.lifecycle !== 'release').map((m) => m.id);
+  const ineligible = members.filter((m) => m.lifecycle === 'ephemeral').map((m) => m.id);
   if (ineligible.length === 0) return;
   throw new RuntimeIntegrationError(
     'a releaseTransition plan covers identities that cannot span a transition: ' +
-      `${ineligible.join(', ')}. Only the "release" lifecycle retains state across one ` +
-      'version change; an "ephemeral" identity retains nothing and a "persistent" one is not a ' +
-      'single-transition case.',
+      `${ineligible.join(', ')}. Use "release" or "persistent" identities; ` +
+      'an "ephemeral" identity retains no state across versions.',
     'planNotInModel',
     field,
-    { ineligibleIdentityIds: ineligible, requiredLifecycle: 'release' },
+    { ineligibleIdentityIds: ineligible, eligibleLifecycles: ['release', 'persistent'] },
   );
 }
 
 /**
- * Open the release window for every member.
+ * Open a bounded window for release members only.
  *
  * Callers are expected to have run {@link assertTransitionEligible}
- * first, so this is a straight loop: one read-modify-write per member,
- * each under the same cross-release-stable key #60 owns.
+ * first. Persistent members participate without a window or its cleanup.
+ * Release writes use the same cross-release-stable key #60 owns.
  *
  * ## The open is guarded, and the revision is measured per member
  *
@@ -247,6 +246,7 @@ export async function openReleaseWindows(
 
   const opened: SyntheticIdentityId[] = [];
   for (const member of input.members) {
+    if (member.lifecycle !== 'release') continue;
     // Absent means `0` — "the record must not exist yet" — which is what
     // closes the create-race on this path: if another writer creates the
     // record in the window, its revision is at least 1 and this write is
@@ -423,6 +423,7 @@ export async function persistRun(input: PersistRunInput): Promise<PersistRunResu
 
   if (input.closeTransition === true && toVersion !== undefined) {
     for (const member of input.members) {
+      if (member.lifecycle !== 'release') continue;
       // Measured here, in this loop, and not carried down from the write
       // loop above: this is a *second pass* over every member, after
       // each member's `recordRun` and `touch` have already advanced the
