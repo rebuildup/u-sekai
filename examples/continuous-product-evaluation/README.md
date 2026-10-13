@@ -124,10 +124,9 @@ environment "staging" @ 2026.10.2  (a separate, simultaneously live process)
    started instances share a declared environment name and differ only in
    version. The promotion moves a pointer between them; it does not overwrite
    either, so the earlier version survives as a baseline.
-2. **One ephemeral and one persistent cohort coexist.** They are members of the
-   same cohort in the same run, and the run shows the difference in what they
-   keep: the persistent identity carries its interaction count forward, the
-   ephemeral one retains nothing. The separate returning cohort also uses the
+2. **Separate ephemeral and persistent cohorts execute.** An ephemeral-only
+   cohort inspects version B without retained state. A mixed cohort also shows
+   the retention difference side by side in version A. The returning cohort uses the
    `persistent` lifecycle: its identity, state reference and first-observed
    timestamp survive A -> B, and its interaction count increases from one to
    two without opening a bounded release window.

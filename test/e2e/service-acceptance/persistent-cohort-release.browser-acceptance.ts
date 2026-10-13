@@ -86,7 +86,8 @@ import {
   resolveEvidenceFiles,
   type AcceptanceReport,
 } from '../../fixtures/service-acceptance/scenario.js';
-import { stableStringify } from '../../fixtures/service-acceptance/harness.js';
+import { accountCreateStep, openStore, runAcceptanceRun, stableStringify } from '../../fixtures/service-acceptance/harness.js';
+import { buildScenarioPlan, EPHEMERAL_COHORT_ID, EPHEMERAL_PROGRAM_ID, scenarioClock } from '../../fixtures/service-acceptance/durable.js';
 import {
   CUSTOMER_ACTOR,
   emptyLedger,
@@ -228,7 +229,7 @@ describe('#67 0.4.0 service acceptance: a persistent cohort across A -> B', () =
     expect(scenario.pair.after.baseUrl).toMatch(/^http:\/\/127\.0\.0\.1:\d+$/);
   });
 
-  it('SR2 one ephemeral and one persistent cohort coexist, and only the persistent one retains', () => {
+  it('SR2 a mixed cohort preserves state only for its persistent member', () => {
     const { mixed } = report;
 
     // Both lifecycles are in the *same* cohort, in the same run. This is
@@ -259,6 +260,40 @@ describe('#67 0.4.0 service acceptance: a persistent cohort across A -> B', () =
     // declared and never run.
     expect(mixed.worldAfter.titles).toContain(MIXED_PERSISTENT_TASK);
     expect(mixed.worldAfter.titles).toContain(MIXED_EPHEMERAL_TASK);
+  });
+
+  it('SR2b an ephemeral-only cohort runs separately from the persistent returning cohort', async () => {
+    const { root, model, pair } = report.scenario;
+    const output = await runAcceptanceRun({
+      root, model, pair,
+      plan: buildScenarioPlan({
+        programId: EPHEMERAL_PROGRAM_ID,
+        cohortId: EPHEMERAL_COHORT_ID,
+        environmentId: ENV_B,
+        version: VERSION_B,
+        observedAt: '2026-10-10T09:00:00.000Z',
+        mode: 'pointInTime',
+        delivery: 'ephemeral-version-b',
+        planningCeiling: 1,
+      }),
+      runId: 'run-ephemeral-version-b',
+      steps: [accountCreateStep(EPHEMERAL_ID, pair.after.baseUrl, 'acct-ephemeral-nova')],
+      scriptFor: () => [{ kind: 'finish', reason: 'inspected version B without retained history' }],
+      returningIdentityId: RETURNING_ID,
+      now: scenarioClock('2026-10-10T09:00:00.000Z'),
+    });
+    expect(output.result.lineage.cohortId).toBe(EPHEMERAL_COHORT_ID);
+    expect(output.result.lineage.cohortId).not.toBe(report.comparison.run.lineage.cohortId);
+    expect(output.result.resolvedCohort.lifecycles).toEqual(['ephemeral']);
+    expect(report.comparison.run.resolvedCohort.lifecycles).toEqual(['persistent']);
+    const stored = await openStore(root.dir, 'store').loadIdentity(EPHEMERAL_ID);
+    expect(stored.retainedState).toBeUndefined();
+    expect(stored.observations.map((entry) => entry.runId)).toContain('run-ephemeral-version-b');
+    expect(output.result.setup.status).toBe('provisioned');
+    expect(output.result.cleanup?.status).toBe('cleaned');
+    const events = await fs.readFile(path.join(output.result.artifactDir, 'events.ndjson'), 'utf8');
+    expect(events).toContain('observation.captured');
+    expect(events).not.toContain('capability.violation');
   });
 
   it('SR3 browser-backed interaction: every run was driven by a real Chromium, with no capability violation', async () => {

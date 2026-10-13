@@ -94,12 +94,15 @@ export const ENV_B: EnvironmentId = environmentId('env-staging-version-b');
 
 /** Cohort that holds an ephemeral and a persistent identity at once. */
 export const MIXED_COHORT_ID: CohortId = 'coh-mixed' as CohortId;
+/** A separate ephemeral-only cohort, not merely a mixed-cohort member. */
+export const EPHEMERAL_COHORT_ID: CohortId = 'coh-ephemeral' as CohortId;
 /** Cohort that spans the A->B transition. */
 export const RETURNING_COHORT_ID: CohortId = 'coh-returning' as CohortId;
 /** Control cohort: same environment, no retained history behind it. */
 export const CONTROL_COHORT_ID: CohortId = 'coh-control' as CohortId;
 
 export const MIXED_PROGRAM_ID: ReviewProgramId = reviewProgramId('rp-continuous');
+export const EPHEMERAL_PROGRAM_ID: ReviewProgramId = reviewProgramId('rp-ephemeral');
 export const RETURNING_PROGRAM_ID: ReviewProgramId = reviewProgramId('rp-transition');
 export const CONTROL_PROGRAM_ID: ReviewProgramId = reviewProgramId('rp-control');
 
@@ -252,6 +255,7 @@ export function buildScenarioModel(input: ModelInput): ProductModel {
     environments,
     identities: [...input.identities],
     cohorts: [
+      makeCohort(EPHEMERAL_COHORT_ID, 'Ephemeral-only evaluation', [EPHEMERAL_ID]),
       makeCohort(MIXED_COHORT_ID, 'Ephemeral and persistent, side by side', [
         EPHEMERAL_ID,
         PERSISTENT_ID,
@@ -260,6 +264,7 @@ export function buildScenarioModel(input: ModelInput): ProductModel {
       makeCohort(CONTROL_COHORT_ID, 'Control: no retained history behind it', [CONTROL_ID]),
     ],
     programs: [
+      makeProgram(EPHEMERAL_PROGRAM_ID, 'Ephemeral review programme', EPHEMERAL_COHORT_ID, [ENV_B]),
       makeProgram(MIXED_PROGRAM_ID, 'Continuous review programme', MIXED_COHORT_ID, [ENV_A, ENV_B]),
       makeProgram(RETURNING_PROGRAM_ID, 'Release-transition review programme', RETURNING_COHORT_ID, [
         ENV_A,
