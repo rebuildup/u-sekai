@@ -42,7 +42,21 @@ export type RuntimeErrorCode =
   /** The cohort resolved to no eligible member. */
   | 'emptyCohort'
   /** A durable store rejected a read-modify-write. */
-  | 'cohortState';
+  | 'cohortState'
+  /**
+   * Another writer advanced the record between this run's read and its
+   * write (Issue #92).
+   *
+   * Its own code, rather than a flavour of `cohortState`, because the
+   * caller's response is different. A corrupt record is an operator
+   * problem; a conflict is a scheduling outcome that someone has to
+   * decide about — retry, or fail the run. Merging them would leave a
+   * caller no way to tell "the store is damaged" from "someone got
+   * there first", which is the same class of mistake as the one #92
+   * exists to fix: absence of a signal being read as absence of a
+   * problem.
+   */
+  | 'revisionConflict';
 
 export class RuntimeIntegrationError extends Error {
   readonly kind: 'runtime_integration_error' = 'runtime_integration_error' as const;
