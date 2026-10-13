@@ -5,7 +5,7 @@
  *
  * ```bash
  * npm ci
- * npx playwright install chromium
+ * npx playwright install --with-deps chromium
  * node --import tsx examples/continuous-product-evaluation/run-acceptance.ts
  * ```
  *
@@ -159,9 +159,14 @@ export function summarise(report: AcceptanceReport): AcceptanceExampleOutput {
   );
 
   check(
-    'the same Synthetic Identity spans both versions',
+    'the same persistent Synthetic Identity retains state across both versions',
     comparison.stateAfterB.identity.id === baseline.stateAfterA.identity.id &&
-      comparison.stateAfterB.observations.length === 2,
+      baseline.stateAfterA.identity.lifecycle === 'persistent' &&
+      comparison.stateAfterB.identity.lifecycle === 'persistent' &&
+      comparison.stateAfterB.observations.length === 2 &&
+      baseline.stateAfterA.retainedState?.interactionCount === 1 &&
+      comparison.stateAfterB.retainedState?.interactionCount === 2 &&
+      comparison.stateAfterB.releaseWindow === undefined,
     `${comparison.stateAfterB.identity.id} observed ${comparison.stateAfterB.observations
       .map((o) => o.version)
       .join(' then ')}`,
@@ -198,7 +203,8 @@ export function renderReport(output: AcceptanceExampleOutput): string {
   );
   lines.push('');
   for (const entry of output.stages) {
-    lines.push(`  [ok]   ${entry.stage}`);
+    const status = output.unmetExpectations.includes(entry.stage) ? 'FAIL' : 'ok';
+    lines.push(`  [${status}]   ${entry.stage}`);
     lines.push(`         ${entry.observed}`);
   }
   lines.push('');

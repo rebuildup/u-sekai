@@ -15,7 +15,7 @@
  *
  * | #67 criterion | test |
  * | --- | --- |
- * | fresh clone can run the documented example | `AC1 fresh clone can run the documented example` |
+ * | fresh clone can run the documented example | `AC1` here plus `example-command.browser-acceptance.ts` |
  * | the persistent identity remains the same across A -> B | `AC2 the persistent identity is the same Synthetic Identity across A -> B` |
  * | no privileged Operator action in Participant capabilities | `AC3 no privileged Operator action is reachable from a Participant` |
  * | the resulting finding has complete lineage/evidence | `AC4 the resulting finding carries complete lineage and evidence` |
@@ -51,11 +51,8 @@
  * `environment instance identity` test asserts both instance keys, and
  * `AC2` asserts both versions on the durable record.
  *
- * `openTransition` / `closeTransition` are not guarded against a
- * concurrent run of the same `release` identity (Issue #103), so this
- * scenario's "the same identity spanned A and B" claim is about a
- * sequential execution and says nothing about what two concurrent runs
- * of one identity would do.
+ * This scenario is sequential. Guarded persistence is covered by the
+ * runtime concurrency tests, not by this acceptance run.
  */
 
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
@@ -401,7 +398,8 @@ describe('#67 0.4.0 service acceptance: a persistent cohort across A -> B', () =
     // declared lifecycle, same state reference.
     expect(before.identity.id).toBe(RETURNING_ID);
     expect(after.identity.id).toBe(before.identity.id);
-    expect(after.identity.lifecycle).toBe('release');
+    expect(before.identity.lifecycle).toBe('persistent');
+    expect(after.identity.lifecycle).toBe('persistent');
     expect(after.identity.stateRef).toBe(before.identity.stateRef);
     expect(after.identity.displayName).toBe(before.identity.displayName);
 
@@ -418,17 +416,17 @@ describe('#67 0.4.0 service acceptance: a persistent cohort across A -> B', () =
       'run-returning-version-b',
     ]);
 
-    // The release window the runtime opened before version B and closed
-    // after it is still on the record, with both versions on it.
-    expect(after.releaseWindow?.fromVersion).toBe(VERSION_A);
-    expect(after.releaseWindow?.toVersion).toBe(VERSION_B);
-    expect(after.releaseWindow?.closedAt).toBeDefined();
-    expect(comparison.run.persistence.closedTransitions).toEqual([RETURNING_ID]);
-
-    // #60's rule: the transition-scoped retained state is gone once the
-    // transition closed. The identity returned; it did not accumulate
-    // across the boundary.
-    expect(after.retainedState).toBeUndefined();
+    // Persistent history survives the comparison. Only a release
+    // lifecycle would have a bounded window and clear its state at B.
+    expect(before.releaseWindow).toBeUndefined();
+    expect(after.releaseWindow).toBeUndefined();
+    expect(comparison.run.persistence.closedTransitions).toEqual([]);
+    expect(before.retainedState?.interactionCount).toBe(1);
+    expect(after.retainedState).toMatchObject({
+      ref: before.retainedState?.ref,
+      firstObservedAt: before.retainedState?.firstObservedAt,
+      interactionCount: 2,
+    });
 
     // The two runs are a release-transition comparison by #57's own
     // predicate, and the run recorded the comparison it made.
@@ -666,7 +664,7 @@ describe('#67 0.4.0 service acceptance: a persistent cohort across A -> B', () =
     expect(stableStringify(finding)).toBe(before);
   });
 
-  it('AC1 fresh clone can run the documented example', async () => {
+  it('AC1 the documented example delegates to this scenario and reports its result', async () => {
     // The documented command runs the file the README names...
     const readme = await fs.readFile(path.join(repoRoot, EXAMPLE_README), 'utf8');
     expect(readme).toContain(EXAMPLE_COMMAND);

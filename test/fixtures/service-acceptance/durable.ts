@@ -143,7 +143,7 @@ export function makeIdentity(spec: IdentitySpec): SyntheticIdentity {
   });
 }
 
-/** The three identity declarations the scenario uses, with real origins. */
+/** The four identity declarations the scenario uses, with real origins. */
 export function scenarioIdentities(baseUrlA: string, baseUrlB: string): {
   readonly ephemeral: IdentitySpec;
   readonly persistent: IdentitySpec;
@@ -172,7 +172,7 @@ export function scenarioIdentities(baseUrlA: string, baseUrlB: string): {
     },
     returning: {
       id: RETURNING_ID,
-      lifecycle: 'release',
+      lifecycle: 'persistent',
       displayName: 'Leo (returning)',
       persona:
         'A Synthetic User who used the previous version of this task tracker and is ' +

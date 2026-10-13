@@ -14,9 +14,14 @@ From a fresh clone:
 
 ```bash
 npm ci
-npx playwright install chromium
+npx playwright install --with-deps chromium
 node --import tsx examples/continuous-product-evaluation/run-acceptance.ts
 ```
+
+On Linux, `--with-deps` may require administrator access. For a rootless
+installation, follow [the browser runtime guide](../../docs/browser-runtime.md#binaries-alone-are-not-enough-on-linux)
+to install Chromium and extract its system libraries into a temporary prefix.
+Export that prefix's library path when running the example.
 
 The command starts two live deployments of one declared environment, drives a
 real Chromium against each, promotes the returning cohort from version A to
@@ -45,7 +50,7 @@ Simulated, not human. See docs/non-reality.md and .../README.md.
          version A listed 3 task(s) before the promotion and 3 after
   [ok]   the two environments share no mutable state
          version A lists [Find the help page, Draft the release checklist, Renew the passport before June], version B lists [Re-issue the parking permit]
-  [ok]   the same Synthetic Identity spans both versions
+  [ok]   the same persistent Synthetic Identity retains state across both versions
          idn-returning-leo observed 2026.10.1 then 2026.10.2
   [ok]   the comparison run produced an evidence-backed longitudinal finding
          1 finding(s)
@@ -77,14 +82,6 @@ them — cannot drive `PlaywrightAdapter` in this release. The repo's own
 `npm run demo:server` (`node --import tsx ./src/demo/environment/server.ts`) is
 unaffected only because it never evaluates a function in a page.
 
-On a host without Chromium's shared libraries on the default search path
-(WSL2, a slim container), export the library path first or the browser will
-not launch:
-
-```bash
-export LD_LIBRARY_PATH=/home/basic/chrome-libs/usr/lib/x86_64-linux-gnu
-```
-
 There is **no external API key**: every reasoning decision is taken by a local
 deterministic double, so the example runs in CI with no provider account and no
 network egress. The environment under evaluation is an in-repo HTTP
@@ -98,7 +95,7 @@ Everything the Synthetic Users do, and nothing about real people.
 | --- | --- |
 | The environment: an in-repo task-tracker application, served twice from two independent processes. | Any real product, customer, deployment or traffic. |
 | The Synthetic Users: capability-constrained agents whose memory is bounded by the capability model (ADR-0006). | Human users, human sessions, or any human population statistic. |
-| The Reasoner: a local, deterministic double that takes its self-report from the cohort's own durable record. | A foundation model. No provider is contacted, and no key is read. |
+| The Reasoner: a local, deterministic double using durable version history plus fixture-supplied task titles from the earlier HTTP world snapshot. | A foundation model or autonomous interpretation of the current rendered page. No provider is contacted, and no key is read. |
 | The customer decision: one `accepted` disposition recorded by a named workspace, so the KPI primitives have a decision to count. | A real review board, a real triage queue, or a real customer. |
 | The privileged world setup: a scripted provisioning connector behind #59's authority gate. | Real accounts, real money, real inboxes. Real-money authority stays `denied`. |
 
@@ -130,14 +127,18 @@ environment "staging" @ 2026.10.2  (a separate, simultaneously live process)
 2. **One ephemeral and one persistent cohort coexist.** They are members of the
    same cohort in the same run, and the run shows the difference in what they
    keep: the persistent identity carries its interaction count forward, the
-   ephemeral one retains nothing.
+   ephemeral one retains nothing. The separate returning cohort also uses the
+   `persistent` lifecycle: its identity, state reference and first-observed
+   timestamp survive A -> B, and its interaction count increases from one to
+   two without opening a bounded release window.
 3. **Accounts are provisioned through the World Operator, never around it.**
    Setup and cleanup both go through #59's authority gate, and the audit names
    the product, program, cohort, environment and run responsible.
-4. **The returning cohort's finding is evidence-backed.** Its self-report
-   follows from the cohort's own durable record — the task it created at version
-   A is not in version B's list — and the finding cites evidence handles that
-   resolve to files in the run's artifact.
+4. **The returning cohort's finding is evidence-backed.** Its scripted
+   self-report uses durable version history and prior task titles supplied by
+   the fixture. The test independently checks the task's absence in version B
+   over HTTP, and the finding cites files in the run artifact. This is not a
+   demonstration of autonomous visual reasoning or durable task-title memory.
 5. **A customer disposition moves the KPIs without touching the finding.** The
    finding is compared byte for byte before and after the decision is recorded;
    the disposition is a reference to it, never a copy.
@@ -157,9 +158,9 @@ Stated here rather than left for a reader to infer:
   a real difference, but a narrower one than a UI redesign would be.
 - **The participant's Reasoner cannot read the page text.** The participant's
   current-step prompt carries `url` and `title`, not the rendered page. The
-  self-report therefore follows from the cohort's durable record, and the
-  page-level A-versus-B difference is asserted directly against the two live
-  instances over HTTP.
+  self-report uses durable history plus fixture-supplied prior task titles;
+  those titles are not stored in the identity record. The page-level
+  A-versus-B difference is asserted against the two live instances over HTTP.
 - **The change verdict is `unknown`, not `introduced`.** The version-A run
   produced no finding, so there was nothing for the join to compare against,
   and #61's own rule is that anything short of a real join is `unknown`
@@ -167,9 +168,8 @@ Stated here rather than left for a reader to infer:
   a claim the evidence does not support. `control-cases.browser-acceptance.ts`
   pins what a non-empty baseline would have produced, so the `unknown` is
   demonstrably a property of this baseline and not of a constant verdict.
-- **Concurrency is out of scope.** `openTransition` / `closeTransition` are not
-  guarded against a concurrent run of the same `release` identity (Issue #103),
-  so the "same identity spanned A and B" claim is about a sequential execution.
+- **Concurrency is out of scope for this scenario.** Guarded persistence has
+  separate runtime tests. This example proves sequential A -> B execution.
 - **The example is a fixture, not a benchmark.** It is deterministic on purpose:
   a scenario that reads well on a fast machine and fails on a slow one trains
   reviewers to re-run instead of read.
