@@ -38,7 +38,12 @@ export default [
     ignores: ['dist/**', 'node_modules/**', '.tmp/**', 'coverage/**', 'runs/**'],
   },
   {
-    files: ['src/**/*.ts', 'test/**/*.ts'],
+    // `examples/**` is listed because `eslint .` reports a green run
+    // even when every matched file is ignored. Leaving it out made the
+    // versioned-environment example pass lint without ever being
+    // checked, which is the same "zero files, still a pass" shape as
+    // the broken `test:unit` / `test:e2e` scripts.
+    files: ['src/**/*.ts', 'test/**/*.ts', 'examples/**/*.ts'],
     languageOptions: {
       parser: tsparser,
       parserOptions: {

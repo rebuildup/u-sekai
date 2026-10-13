@@ -1,5 +1,12 @@
 /**
- * Shared builders for the runtime integration suite (issue #63).
+ * Shared builders for the runtime suite (issue #63).
+ *
+ * Also used from the browser profile by
+ * `test/browser/runtime/playwright-vertical-slice.test.ts`. These
+ * builders are profile-neutral — a fixed clock, declared ids, a
+ * deterministic Reasoner double, no browser anywhere — so sharing them
+ * keeps the two profiles describing the same world, and duplicating
+ * them would let the descriptions drift.
  *
  * Everything here is deterministic: a fixed clock, declared ids and
  * fixed instants. A vertical-slice test that reads well on a fast

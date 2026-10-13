@@ -100,6 +100,45 @@ The browser suite is deliberately **not** part of `npm test`:
 `ci.yml` runs the default profile only, so it stays fast and works on a
 machine with no browser installed.
 
+### The split is enforced, not just documented
+
+"Browser tests live in `test/browser/**`" is a convention until someone
+puts one under `test/integration/**`. That happened in Issue #63: a
+Playwright-backed vertical-slice acceptance test was placed under
+`test/integration/runtime/`, the default `include` picked it up, and
+`npm run ci` started requiring Chromium — failing on any machine without
+`libnspr4.so` and friends, including every agent sandbox that ran
+`npm ci` but not `npx playwright install --with-deps chromium`. Issue
+#90 fixed it and added the guard.
+
+[`test/unit/toolchain/default-profile-is-browser-free.test.ts`](../test/unit/toolchain/default-profile-is-browser-free.test.ts)
+runs inside the **default** profile and asserts the invariant
+structurally, not by comment:
+
+- the `include` globs are read from `vitest.config.ts` itself, so
+  widening the profile is what makes the check bite;
+- every file those globs match is walked over its **transitive** import
+  closure;
+- the closure may not contain anything under `test/browser/**` — the
+  tree holding `assertBrowserRuntimeAvailable` and the browser
+  `globalSetup` — nor may a matched test import `playwright` or
+  `src/adapter/browser/playwright-adapter` directly.
+
+The same file runs both rules against the very file that caused the
+regression and requires them to fire, so the guard cannot silently stop
+detecting anything.
+
+`src/cli/index.ts` statically imports `PlaywrightAdapter` so the shipped
+CLI can offer `--adapter playwright`. That is a product boundary, not a
+test dependency: importing the module does not launch a browser, and the
+default profile only ever asks for the HTTP adapter. The guard therefore
+checks what a **test** imports, not what the whole transitive package
+graph touches.
+
+A subprocess spawn (`node dist/cli/index.js run ... --adapter
+playwright`, no import at all) is the one shape the guard cannot see.
+It is stated in the guard's own docstring rather than papered over.
+
 On a host that is missing the system libraries, prefix the command:
 
 ```bash
@@ -115,6 +154,15 @@ LD_LIBRARY_PATH=/tmp/pw-deps/extracted/usr/lib/x86_64-linux-gnu npm run test:bro
 | `privileged-leak.test.ts` | no selector / DOM / console / network reaches the participant view, the observation artifact or the Reasoner request; a deliberate leak becomes a typed `capability.violation` |
 | `cli-browser-smoke.test.ts` | the shipped CLI with `--adapter playwright` produces a complete, hash-verified artifact |
 | `failure-diagnostics.test.ts` | an unreachable target and a mid-run failure both fail loudly and fabricate nothing |
+| `runtime/playwright-vertical-slice.test.ts` | the #63 vertical slice end to end against a real Chromium: the participant types into the real page, permitted world state is provisioned, and an evidence-backed `Finding` comes back (Issue #90 moved this here from `test/integration/runtime/`) |
+
+The browser-independent half of that vertical slice — everything the
+runtime *decides* rather than everything the browser *does* — is covered
+under the default profile by
+[`test/integration/runtime/http-vertical-slice.test.ts`](../test/integration/runtime/http-vertical-slice.test.ts),
+which drives the same `src/demo/environment` server through
+`HttpAdapter`. The two files partition one claim, one per profile, so
+moving the browser test did not delete runtime coverage from `npm test`.
 
 ### Run a single browser experiment by hand
 

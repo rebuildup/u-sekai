@@ -24,6 +24,31 @@
  * off the rendered page through the observer view rather than hardcoding
  * them. Reusing that helper keeps the two browser-facing suites agreeing
  * about what "the Add button" is.
+ *
+ * ## Why this file lives in `test/browser/**` and not in `test/integration/**`
+ *
+ * Issue #90. This test needs a real Chromium, and `npm run ci` runs the
+ * **default** Vitest profile, whose `include` covers `test/unit`,
+ * `test/integration` and `test/e2e`. A browser-backed test sitting there
+ * makes `npm run ci` fail on any machine without Chromium's shared
+ * libraries — which is most agent sandboxes and most developer laptops
+ * that never ran `npx playwright install --with-deps chromium`. The
+ * browser path has its own profile, `test/vitest.browser.config.ts`,
+ * whose `globalSetup` turns a missing runtime into a loud failure; that
+ * is where a browser-backed acceptance test belongs, and moving the
+ * file there changes no assertion.
+ *
+ * The browser-independent half of the same vertical slice — everything
+ * the runtime *decides* rather than everything the browser *does* — is
+ * covered under the default profile by
+ * `test/integration/runtime/http-vertical-slice.test.ts`, through
+ * `HttpAdapter` against the same in-repo demo server. Nothing was lost
+ * in the move: the two files partition the same claim, one per profile.
+ *
+ * `test/integration/runtime/support/fixtures.ts` is imported from
+ * across the profile boundary on purpose. It is profile-neutral
+ * deterministic builders with no browser dependency, and duplicating
+ * it would let the two profiles drift apart.
  */
 
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
@@ -31,8 +56,8 @@ import { promises as fs } from 'node:fs';
 import * as path from 'node:path';
 
 import { PlaywrightAdapter } from '../../../src/adapter/browser/playwright-adapter.js';
-import { assertBrowserRuntimeAvailable } from '../../browser/support/browser-runtime.js';
-import { locateDemoControls, startDemoServer } from '../../browser/support/demo.js';
+import { assertBrowserRuntimeAvailable } from '../support/browser-runtime.js';
+import { locateDemoControls, startDemoServer } from '../support/demo.js';
 import { runEvaluation, defaultParticipantProfile } from '../../../src/runtime/index.js';
 import type { RuntimeConfiguration } from '../../../src/runtime/index.js';
 import type { SyntheticIdentity } from '../../../src/product/index.js';
@@ -54,7 +79,7 @@ import {
   reasonerFactory,
   seedIdentities,
   stagingPolicy,
-} from './support/fixtures.js';
+} from '../../integration/runtime/support/fixtures.js';
 
 const TITLE = 'Write the release notes';
 const OBSERVER_FINDING = {

@@ -19,7 +19,21 @@ const root = fileURLToPath(new URL('..', import.meta.url)).replace(/\/+$/, '');
 export default defineConfig({
   root,
   test: {
-    include: ['test/browser/**/*.test.ts'],
+    include: [
+      'test/browser/**/*.test.ts',
+      // Issue #70: the #67 acceptance scenario lives under
+      // `test/e2e/service-acceptance/**`, which the default profile sweeps
+      // with `test/e2e/**/*.test.ts`. The scenario is browser-backed, so it
+      // is routed here by a browser-only file suffix instead of by a
+      // `*.test.ts` glob: a `*.test.ts` glob here would put the scenario
+      // in *both* profiles and make `npm run ci` require Chromium, which is
+      // exactly the defect class Issue #90 exists to undo. With the suffix,
+      // the default profile cannot reach the scenario at all.
+      // `routing/**` is the deliberate exception in the other direction: the
+      // guard that pins this routing is itself an HTTP-free default-profile
+      // test, so it keeps the plain `.test.ts` suffix and is not matched here.
+      'test/e2e/service-acceptance/**/*.browser-acceptance.ts',
+    ],
     // Fails once, loudly, if the browser runtime is missing or cannot be
     // launched. Never skips.
     globalSetup: ['test/browser/support/global-setup.ts'],
