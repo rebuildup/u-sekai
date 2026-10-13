@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { renderReport } from '../../../examples/continuous-product-evaluation/run-acceptance.js';
 
-describe('acceptance example report', () => {
+describe('acceptance example report (browser-profile routing)', () => {
   it('does not label an unmet stage as successful', () => {
     const output = renderReport({
       stages: [{ stage: 'identity retained', observed: 'no retained state' }],
