@@ -13,10 +13,10 @@ u-sekai intentionally uses English for project-authored documentation, GitHub Is
 
 ## Agent Skills lifecycle
 
-project-init 由来の Agent Skills は **project-local** に管理し、global install を canonical にしない。
+Manage aude-skills in the project. The repository's copies are the canonical installation for this project.
 
-- 初回導入 / 全体 reconcile: `bunx skills add rebuildup/project-init --skill '*' --agent claude-code opencode codex -y`
-- fresh clone から lock を復元: `bunx skills install`
+- Run `mise run skills-bootstrap` to reconcile the adopted aude-skills set. For `writing-discipline`, use `bunx skills add rebuildup/writing-skills --skill writing-discipline --copy`.
+- A fresh clone uses the committed Skill files. Confirm that the intended agent can find them.
 - 継続更新: `bunx skills update -p -y`
 - `skills-lock.json` は `skills` CLI が生成・更新する source/freshness metadata として commit する。手で hash / source entry を捏造しない。
 - upstream-managed Skill 本文は手編集しない。project 固有の refinement / override は別の project-local Skill、adapter、ADR、docs に置き、次回 update で上書きされない構造にする。
