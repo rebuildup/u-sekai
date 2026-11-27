@@ -36,7 +36,7 @@ See [`README.md`](./README.md) and [`CONTRIBUTING.md`](./CONTRIBUTING.md) for de
 | Long-lived design decisions | `docs/adr/`(not yet created; first ADR lands when a decision is finalized) |
 | Draft research questions | `docs/research-issues/` |
 | Governance baseline | `.tmp/project-init/` at `release-0-3-0` (SHA `57fb4a2e...`); see [`docs/rebuildup-pin.md`](./docs/rebuildup-pin.md) |
-| Agent Skills source | current `rebuildup/project-init`, managed by `bunx skills` + `skills-lock.json` |
+| Agent Skills source | current `rebuildup/aude-skills`, managed by `bunx skills` + `skills-lock.json` |
 
 Conversation history, native session IDs, agent-private memory, local shell history — **none of these are SoT**.
 
@@ -129,7 +129,7 @@ The project-init governance baseline defaults internal docs / Issues / PRs to Ja
 
 If a contributor prefers Japanese for a specific file, that is fine locally but should not block international review.
 
-> The Skills under `.claude/skills/` are kept in Japanese because they track upstream-authored Skills verbatim. They are updated from current `rebuildup/project-init` through `bunx skills`; the governance baseline does not freeze Skill content. Translation remains tracked in R-09.
+> The Skills under `.claude/skills/` are kept in Japanese because they track upstream-authored Skills verbatim. They are updated from current `rebuildup/aude-skills` through `bunx skills`; the governance baseline does not freeze Skill content. Translation remains tracked in R-09.
 
 ## 8. Skill discovery
 
@@ -184,5 +184,5 @@ This file / templates / Issue configuration is **idempotent reconciliation**. Fo
 - [`CONTRIBUTING.md`](./CONTRIBUTING.md) — contribution policy (research / design phase)
 - [`README.md`](./README.md) — vision / non-goals / current status
 - [`docs/research-issues/`](./docs/research-issues/) — draft research questions
-- [`docs/rebuildup-pin.md`](./docs/rebuildup-pin.md) — pinned rebuildup/project-init source
+- [`docs/rebuildup-pin.md`](./docs/rebuildup-pin.md) — pinned aude-skills governance source
 - `docs/adr/` — long-lived design decisions(not yet created)

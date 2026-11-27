@@ -3,6 +3,6 @@ contact_links:
   - name: u-sekai discussions
     url: https://github.com/u-sekai/u-sekai/discussions
     about: For larger directional discussions
-  - name: rebuildup/project-init policy
-    url: https://github.com/rebuildup/project-init/tree/release-0-3-0
+  - name: aude-skills policy (adopted governance baseline)
+    url: https://github.com/rebuildup/aude-skills/tree/57fb4a2e5abe6f52e4fd9cb2cb88234496e47d4b
     about: The pinned reference policy this repository follows
