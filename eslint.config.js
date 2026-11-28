@@ -38,7 +38,7 @@ export default [
     ignores: ['dist/**', 'node_modules/**', '.tmp/**', 'coverage/**', 'runs/**'],
   },
   {
-    files: ['src/**/*.ts', 'test/**/*.ts'],
+    files: ['src/**/*.ts', 'test/**/*.ts', '*.config.ts', '*.config.js'],
     languageOptions: {
       parser: tsparser,
       parserOptions: {

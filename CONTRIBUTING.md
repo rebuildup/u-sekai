@@ -99,18 +99,52 @@ We follow the pinned rebuildup policy: **GitHub Issues are the durable work / de
 
 PR quality / readiness and merge authorization are **separate states**. An agent (AI or human) may merge / squash / rebase / enable auto-merge **only** when the user has explicitly authorized merge/landing for the identified PR. Generic completion cues ("CI is green", "Ready", "approved", "fix the conflict", "handle this PR") are **not** authorization. Without explicit authorization, stop at **ready-to-merge** and report the PR identity, current head SHA, gate state, and blockers.
 
-## 5. Design discussion
+## 5. New code must be inside the quality gate
+
+`npm run lint` and `npm run typecheck` only report on the files their configuration matches. A new
+directory that neither config matches is **not skipped loudly — it is skipped silently, and both
+commands still exit 0.** That is how `examples/` shipped unverified for a release (Issue #69) and
+how root-level `*.config.ts` files escaped entirely (Issue #104).
+
+When you add source files:
+
+- **`*.ts` under `src/` or `test/`** — covered automatically by `eslint.config.js` (`src/**/*.ts`,
+  `test/**/*.ts`) and `tsconfig.json` (`test/**/*`, `src/**/*`). Nothing to do.
+- **Anything else** — a root-level config file, `scripts/*.mjs`, a new top-level directory, or a new
+  source extension — you must add it to both configs in the same PR:
+
+  | | lint | type check |
+  | --- | --- | --- |
+  | where | a `files` entry in `eslint.config.js` | an `include` entry in `tsconfig.json` |
+  | caveat | the entry must be on a config object that **carries `rules`** | — |
+
+  The caveat matters: ESLint's built-in `**/*.js,mjs,cjs` catch-all means a `.mjs` file *is* visited
+  and *looks* covered, but if no config object carries `rules` for it, `eqeqeq`,
+  `@typescript-eslint/no-explicit-any` and the rest are inert there. Being "linted" is not the same as
+  being linted **with the project's rules**.
+
+`test/unit/toolchain/lint-and-typecheck-coverage.test.ts` enforces all of this. It discovers source
+files from `git ls-files` — it does not maintain a directory list — and asks ESLint and the
+TypeScript compiler, using the project's own configs, what each file would actually get. A new
+directory therefore fails the gate until it is covered, with a message naming the directory.
+
+If a genuine gap remains, it may be declared in that file's `EXEMPTIONS` list with a `reason` and an
+owning `issue`. Two rules apply: an entry that stops describing a real gap fails the suite, so
+deleting it is part of closing the gap; and adding an entry for code you are introducing is not an
+exemption, it is the escape the guard exists to catch.
+
+## 6. Design discussion
 
 - Major design changes start in GitHub Discussions / Issue threads before any decision is recorded.
 - Finalized decisions become ADRs in `docs/adr/`. Until the first ADR lands, that directory does not exist.
 - Do not record undecided items as "planned specification".
 
-## 6. AI coding agent contributions
+## 7. AI coding agent contributions
 
 - AI coding agents must follow this document and [`CLAUDE.md`](./CLAUDE.md).
 - Do not depend on global plugin state, home-directory hidden rules, or undocumented machine-specific state.
 
-## 7. Code of conduct
+## 8. Code of conduct
 
 - This is a small, research-oriented project.
 - Mutual respect for research perspectives and design opinions. Evidence-based disagreement is welcome.

@@ -47,6 +47,7 @@ Conversation history, native session IDs, agent-private memory, local shell hist
 - **Synthetic Users are not real users.** README and `docs/non-reality.md` carry the disclaimer; do not delete it in a refinement pass.
 - **Reasoner provider boundary is HTTP-only.** No SDK lock-in inside `src/`. See ADR-0005.
 - **CI never depends on external API keys.** Manual live-smoke is a separate `workflow_dispatch` workflow.
+- **New source directories must be inside the lint and type-check gates.** `eslint .` and `tsc` report only on files their configs match, and skip the rest *silently while still exiting 0* — the `examples/` failure (Issue #69). Any source outside `src/**` and `test/**` (a root config file, `scripts/*.mjs`, a new top-level directory, a new source extension) needs a `files` entry in `eslint.config.js` **on an object that carries `rules`**, plus an `include` entry in `tsconfig.json`. `test/unit/toolchain/lint-and-typecheck-coverage.test.ts` discovers source files from `git ls-files` and fails on anything the two tools would not actually check. See [CONTRIBUTING.md §5](./CONTRIBUTING.md).
 - **Research backlog (`docs/research-issues/`)** is not a release blocker; the functional MVP is. Do not regress implementation to research mid-release.
 
 ## 4. What to do in this phase
